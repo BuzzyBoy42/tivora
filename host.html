@@ -19,6 +19,7 @@
   .bigcode{font-size:42px;letter-spacing:6px;text-align:center;margin:6px 0}
   table{width:100%;border-collapse:collapse} th,td{padding:10px;border-bottom:1px solid var(--border);text-align:left}
   .muted{color:var(--muted)} .qbox{background:#fff;border:1px dashed var(--border);border-radius:12px;padding:12px}
+  .err{background:#fff3f3;border:1px solid #ffcfcf;color:#8b1a1a;padding:10px;border-radius:12px}
 </style>
 </head>
 <body>
@@ -31,11 +32,13 @@
   </div>
 </header>
 
+<!-- Try to load sets; we'll also have a fallback if it fails -->
 <script src="./question_sets.js"></script>
 
 <main>
   <section class="card" id="creator">
     <h2>Create a Game</h2>
+    <div id="err" class="err" style="display:none"></div>
     <div class="row">
       <input id="hostName" placeholder="Host name (optional)" />
       <select id="setSel"></select>
@@ -74,40 +77,57 @@
 </main>
 
 <script type="module">
+/* Firebase via CDN ESM (works on GitHub Pages) */
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.1/firebase-app.js";
 import {
   getFirestore, doc, setDoc, onSnapshot, updateDoc,
   collection, serverTimestamp, query, orderBy, where, runTransaction
 } from "https://www.gstatic.com/firebasejs/10.13.1/firebase-firestore.js";
 
-/* TODO: Replace with your Firebase project values */
-/* Your Firebase project config */
+/* Your Firebase project config (from your message) */
 const firebaseConfig = {
   apiKey: "AIzaSyAHEhrgIPv_mwYTABBcqFCn0J9jrZIEx1Q",
   authDomain: "tivora-6f934.firebaseapp.com",
-  databaseURL: "https://tivora-6f934-default-rtdb.firebaseio.com", // unused here (we use Firestore)
+  databaseURL: "https://tivora-6f934-default-rtdb.firebaseio.com", // unused here
   projectId: "tivora-6f934",
   storageBucket: "tivora-6f934.firebasestorage.app",
   messagingSenderId: "329631706099",
   appId: "1:329631706099:web:d4b5bbd429208656510086",
   measurementId: "G-YVPVNVNHH9"
 };
-
 const app = initializeApp(firebaseConfig);
 const db  = getFirestore(app);
 
-
+/* ---------- UI helpers ---------- */
 const $ = sel => document.querySelector(sel);
+const errBox = $("#err");
+function showErr(msg){ errBox.style.display=""; errBox.textContent = msg; console.error(msg); }
+
+/* Sets: use loaded sets if available; otherwise fallback */
+const FALLBACK_SETS = [
+  { id:"demo-math", name:"Quick Math", questions:[
+    {q:"2 + 2 = ?", choices:["3","4","5"], correct:1},
+    {q:"5 × 3 = ?", choices:["8","15","10"], correct:1},
+    {q:"9 − 4 = ?", choices:["4","5","6"], correct:1}
+  ]},
+  { id:"demo-sci", name:"Basics of Science", questions:[
+    {q:"H₂O is…", choices:["Oxygen","Water","Hydrogen"], correct:1},
+    {q:"Earth is the ___ planet from the Sun.", choices:["2nd","3rd","4th"], correct:1},
+    {q:"Humans breathe in…", choices:["CO₂","N₂","O₂"], correct:2}
+  ]}
+];
+const SETS = (window.TIVORA_SETS && Array.isArray(window.TIVORA_SETS) && window.TIVORA_SETS.length)
+  ? window.TIVORA_SETS : FALLBACK_SETS;
+
 const setSel = $("#setSel");
-(TIVORA_SETS||[]).forEach(s=>{
-  const o=document.createElement('option'); o.value=s.id; o.textContent=s.name; setSel.appendChild(o);
-});
+SETS.forEach(s=>{ const o=document.createElement('option'); o.value=s.id; o.textContent=s.name; setSel.appendChild(o); });
+function getSetById(id){ return SETS.find(s=>s.id===id); }
+
 function genCode(len=6){
   const chars="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let out=""; for(let i=0;i<len;i++) out+=chars[Math.floor(Math.random()*chars.length)];
   return out;
 }
-function getSetById(id){ return (TIVORA_SETS||[]).find(s=>s.id===id); }
 
 const ui = {
   hostName: $("#hostName"),
@@ -127,100 +147,117 @@ const ui = {
 
 let roomRef=null, code=null, round=0, currentSet=null, stopPlayers=null, stopAnswers=null, stopRoomSnap=null;
 
+/* Global error catcher -> UI */
+window.addEventListener('error', e=> showErr(`Script error: ${e.message}`));
+window.addEventListener('unhandledrejection', e=> showErr(`Promise error: ${e.reason?.message||e.reason}`));
+
 ui.createBtn.onclick = async () => {
-  currentSet = getSetById(setSel.value);
-  if(!currentSet){ alert("Pick a set first."); return; }
+  try{
+    currentSet = getSetById(setSel.value);
+    if(!currentSet){ showErr("No set selected (or sets failed to load)."); return; }
 
-  code    = genCode(6);
-  roomRef = doc(db, "rooms", code);
+    code    = genCode(6);
+    roomRef = doc(db, "rooms", code);
 
-  await setDoc(roomRef, {
-    mode: ui.modeSel.value,
-    setId: currentSet.id,
-    hostName: ui.hostName.value || "Host",
-    status: "lobby",
-    round: 0,
-    createdAt: serverTimestamp()
-  });
+    await setDoc(roomRef, {
+      mode: ui.modeSel.value,
+      setId: currentSet.id,
+      hostName: ui.hostName.value || "Host",
+      status: "lobby",
+      round: 0,
+      createdAt: serverTimestamp()
+    });
 
-  ui.roomCode.textContent = code;
-  ui.roomCard.style.display = "";
-  ui.board.style.display = "";
-  $("#creator").style.display = "none";
+    ui.roomCode.textContent = code;
+    ui.roomCard.style.display = "";
+    ui.board.style.display = "";
+    $("#creator").scrollIntoView({behavior:'smooth',block:'start'});
 
-  const playersCol = collection(roomRef, "players");
-  const playersQ = query(playersCol, orderBy("score", "desc"));
-  stopPlayers = onSnapshot(playersQ, snap=>{
-    const rows = [];
-    snap.forEach(d=>rows.push({id:d.id, ...d.data()}));
-    ui.joinCount.textContent = `${rows.length} player(s) connected`;
-    ui.boardBody.innerHTML = rows
-      .map((r,i)=>`<tr><td>${i+1}</td><td>${(r.name||"Player").replace(/</g,"&lt;")}</td><td>${r.score||0}</td></tr>`)
-      .join("");
-  });
+    // live leaderboard
+    const playersCol = collection(roomRef, "players");
+    const playersQ = query(playersCol, orderBy("score", "desc"));
+    stopPlayers = onSnapshot(playersQ, snap=>{
+      const rows = [];
+      snap.forEach(d=>rows.push({id:d.id, ...d.data()}));
+      ui.joinCount.textContent = `${rows.length} player(s) connected`;
+      ui.boardBody.innerHTML = rows
+        .map((r,i)=>`<tr><td>${i+1}</td><td>${(r.name||"Player").replace(/</g,"&lt;")}</td><td>${r.score||0}</td></tr>`)
+        .join("");
+    }, err=> showErr("Live leaderboard error: "+err.message));
 
-  stopRoomSnap = onSnapshot(roomRef, roomSnap=>{
-    const data = roomSnap.data(); if(!data) return;
-    round = data.round|0;
-  });
+    stopRoomSnap = onSnapshot(roomRef, roomSnap=>{
+      const data = roomSnap.data(); if(!data) return;
+      round = data.round|0;
+    }, err=> showErr("Room watcher error: "+err.message));
+
+  }catch(err){
+    // Most common: Firestore not enabled or rules deny write
+    showErr("Create Game failed: " + (err.message || err));
+  }
 };
 
 ui.copyLinkBtn.onclick = async () => {
-  const url = `${location.origin}${location.pathname.replace("host.html","")}player.html?code=${code||''}`;
-  await navigator.clipboard.writeText(url);
-  alert("Copied join link:\n" + url);
+  try{
+    const url = `${location.origin}${location.pathname.replace("host.html","")}player.html?code=${code||''}`;
+    await navigator.clipboard.writeText(url);
+    alert("Copied join link:\n" + url);
+  }catch(err){ showErr("Clipboard error: " + err.message); }
 };
 
 ui.nextBtn.onclick = async () => {
-  if(!roomRef) return;
-  const idx = (round) % currentSet.questions.length;
-  const q = currentSet.questions[idx];
-  round++;
+  try{
+    if(!roomRef) return;
+    const idx = (round) % currentSet.questions.length;
+    const q = currentSet.questions[idx];
+    round++;
 
-  await updateDoc(roomRef, {
-    round,
-    status: "question",
-    question: { n: round, q: q.q, choices: q.choices, answerIndex: q.correct }
-  });
-
-  ui.qTitle.textContent = `Q${round}: ${q.q}`;
-  ui.qChoices.innerHTML = q.choices.map((c,i)=>{
-    const mark = (i===q.correct) ? " ✓" : "";
-    return `<li>${c}${mark}</li>`;
-  }).join("");
-
-  if(stopAnswers) stopAnswers();
-  const answersQ = query(collection(roomRef, "answers"), where("round", "==", round));
-  stopAnswers = onSnapshot(answersQ, (snap)=>{
-    snap.docChanges().forEach(ch=>{
-      if(ch.type!=="added") return;
-      const ansRef = ch.doc.ref;
-
-      runTransaction(db, async (tx)=>{
-        const ansSnap = await tx.get(ansRef);
-        const ans = ansSnap.data(); if(!ans || ans.processed===true) return;
-
-        const roomSnap = await tx.get(roomRef);
-        const data = roomSnap.data(); if(!data || !data.question || data.question.n!==ans.round) return;
-
-        const correct = ans.choiceIndex === data.question.answerIndex;
-        const playerRef = doc(roomRef, "players", ans.playerId);
-        const playerSnap = await tx.get(playerRef);
-        if(!playerSnap.exists()) return;
-
-        const cur = playerSnap.data().score||0;
-        tx.update(playerRef, { score: cur + (correct?1:0) });
-        tx.update(ansRef, { processed: true, correct });
-      });
+    await updateDoc(roomRef, {
+      round,
+      status: "question",
+      question: { n: round, q: q.q, choices: q.choices, answerIndex: q.correct }
     });
-  });
+
+    ui.qTitle.textContent = `Q${round}: ${q.q}`;
+    ui.qChoices.innerHTML = q.choices.map((c,i)=>{
+      const mark = (i===q.correct) ? " ✓" : "";
+      return `<li>${c}${mark}</li>`;
+    }).join("");
+
+    if(stopAnswers) stopAnswers();
+    const answersQ = query(collection(roomRef, "answers"), where("round", "==", round));
+    stopAnswers = onSnapshot(answersQ, (snap)=>{
+      snap.docChanges().forEach(ch=>{
+        if(ch.type!=="added") return;
+        const ansRef = ch.doc.ref;
+        runTransaction(db, async (tx)=>{
+          const ansSnap = await tx.get(ansRef);
+          const ans = ansSnap.data(); if(!ans || ans.processed===true) return;
+
+          const roomSnap = await tx.get(roomRef);
+          const data = roomSnap.data(); if(!data || !data.question || data.question.n!==ans.round) return;
+
+          const correct = ans.choiceIndex === data.question.answerIndex;
+          const playerRef = doc(roomRef, "players", ans.playerId);
+          const playerSnap = await tx.get(playerRef);
+          if(!playerSnap.exists()) return;
+
+          const cur = playerSnap.data().score||0;
+          tx.update(playerRef, { score: cur + (correct?1:0) });
+          tx.update(ansRef, { processed: true, correct });
+        }).catch(err=> showErr("Transaction error: "+err.message));
+      });
+    }, err=> showErr("Answer stream error: "+err.message));
+
+  }catch(err){ showErr("Next Question failed: " + err.message); }
 };
 
 ui.endBtn.onclick = async ()=>{
-  if(!roomRef) return;
-  await updateDoc(roomRef, { status:"ended" });
-  if(stopAnswers) stopAnswers();
-  alert("Game ended.");
+  try{
+    if(!roomRef) return;
+    await updateDoc(roomRef, { status:"ended" });
+    if(stopAnswers) stopAnswers();
+    alert("Game ended.");
+  }catch(err){ showErr("End Game failed: " + err.message); }
 };
 </script>
 </body>
