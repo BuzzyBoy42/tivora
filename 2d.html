@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Tivora — 2D Editor</title>
+<title>Tivora — 2D Editor & Modes</title>
 <style>
   :root { --bg:#0f1020; --ink:#e8e9ff; --muted:#a3a9bd; --panel:rgba(22,24,42,.55); --accent:#7c93ff; }
   *{box-sizing:border-box}
   html,body{height:100%;margin:0;background:#0f1020;color:var(--ink);font:500 14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Inter,sans-serif}
   canvas{display:block;width:100vw;height:100vh;background:#0d0f1d;image-rendering:pixelated;cursor:crosshair}
   .ui{
-    position:fixed;inset:12px auto auto 12px;width:380px;max-height:calc(100dvh - 24px);
+    position:fixed;inset:12px auto auto 12px;width:390px;max-height:calc(100dvh - 24px);
     display:grid;gap:10px;padding:12px;border-radius:14px;background:var(--panel);backdrop-filter:blur(10px);
     border:1px solid rgba(124,147,255,.25);box-shadow:0 20px 50px rgba(0,0,0,.35);overflow:auto
   }
@@ -30,6 +30,15 @@
   .hint{color:var(--muted);font-size:12px}
   .badge{position:fixed;right:12px;bottom:10px;font-variant-numeric:tabular-nums;color:var(--muted);background:rgba(255,255,255,.05);padding:6px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.1)}
   .hidden{display:none}
+  .hud{
+    position:fixed;left:50%;top:10px;transform:translateX(-50%);
+    display:flex;gap:10px;align-items:center; padding:8px 12px;border-radius:12px;
+    background:rgba(10,12,26,.55);backdrop-filter:blur(6px); border:1px solid rgba(124,147,255,.25);
+    font-weight:700
+  }
+  .table{margin-left:8px;border-left:1px solid rgba(255,255,255,.2);padding-left:10px}
+  .imp{color:#ff8e8e}
+  .crew{color:#94ffbf}
 </style>
 </head>
 <body>
@@ -84,27 +93,30 @@
       <button class="btn" id="saveSetBtn">Save to My Sets</button>
       <input class="hidden" type="file" id="fileInput" accept="application/json">
     </div>
-    <div class="hint">Load templates via <code>?template=meadow|island|arena</code> or saved sets via <code>?setId=...</code>.</div>
+    <div class="hint">Templates: <code>?template=meadow|island|arena</code> • Saved: <code>?setId=...</code>.</div>
   </div>
 
   <div class="row">
     <div class="seg">
-      <button class="btn" id="playBtn">▶ Playtest</button>
+      <button class="btn" id="playBtn">▶ Play / Stop</button>
       <span class="hint">WASD/Arrows • Shift to sprint • Smooth camera</span>
     </div>
   </div>
+</div>
+
+<div class="hud hidden" id="hud">
+  <div id="hudLeft"></div>
+  <div class="table" id="hudRight"></div>
 </div>
 
 <div class="badge" id="badge">0 fps</div>
 
 <script>
 (() => {
-  // ===== BASIC CONFIG =====
   const TILE = 48, MAP_W = 60, MAP_H = 34, LAYERS = 5;
   const VIEW = { zoom: 1.8, min: 0.9, max: 3.5, step: 0.1, def: 1.8 };
   const PLAYER = { radius: 14, baseSpeed: 170, sprintMult: 1.45, color: "#ffd86b" };
 
-  // Visual types (collision is a separate flag)
   const TILES = { EMPTY:0, GRASS:1, WALL:2, DIRT:3, PATH:4, SAND:5, WATER:6, STONE:7 };
   const TILE_PALETTE = [
     { key:"GRASS", label:"Grass", color:"#2f7d3b" },
@@ -121,25 +133,21 @@
     solidStroke:"rgba(255,119,119,0.9)", solidFill:"rgba(255,80,80,0.12)"
   };
 
-  // ===== CANVAS =====
   let DPR=1; const cvs=document.getElementById('game'); const ctx=cvs.getContext('2d');
   function resize(){ DPR=Math.max(1,Math.min(2,window.devicePixelRatio||1)); cvs.width=Math.floor(innerWidth*DPR); cvs.height=Math.floor(innerHeight*DPR); ctx.setTransform(DPR,0,0,DPR,0,0); }
   addEventListener('resize', resize, {passive:true}); resize();
 
-  // ===== MAP: { t: type, s:0|1 } =====
   const makeTile=(t=TILES.EMPTY,s=0)=>({t,s});
   const make2D=(w,h,fn)=>Array.from({length:h},(_,y)=>Array.from({length:w},(_,x)=>fn(x,y)));
   const map={ layers:Array.from({length:LAYERS},()=>make2D(MAP_W,MAP_H,()=>makeTile())), meta:{w:MAP_W,h:MAP_H,tile:TILE,tiles:TILES,version:4} };
   const world={ w:MAP_W*TILE, h:MAP_H*TILE };
 
-  // ===== CAMERA / PLAYER =====
   const camera={x:0,y:0,vx:0,vy:0}, CAM={smoothTime:0.14,maxSpeed:6000,lookAhead:38};
-  const player={x:TILE*3,y:TILE*3,face:{x:1,y:0}};
+  const player={x:TILE*3,y:TILE*3,face:{x:1,y:0}, radius:PLAYER.radius, color:PLAYER.color, name:"You", score:0, alive:true};
   let playtest=false, showGrid=true, showSolidOverlay=true, currentLayer=1, tool='paint', tileKey='GRASS', brushSolid=false;
 
   const keys=new Set(); const mouse={down:false,button:0,panning:false,panStart:{x:0,y:0},camStart:{x:0,y:0},worldX:0,worldY:0,tx:-1,ty:-1};
 
-  // ===== PATTERNS =====
   const patterns={};
   function makePattern(w,h,draw){ const c=document.createElement('canvas'); c.width=w;c.height=h; const k=c.getContext('2d'); draw(k,w,h); return k.createPattern(c,'repeat'); }
   function initPatterns(){
@@ -152,7 +160,6 @@
   }
   initPatterns();
 
-  // ===== UI HOOKS =====
   const $ = id=>document.getElementById(id);
   const toolPaint=$('tool-paint'), toolErase=$('tool-erase');
   function setTool(t){tool=t; toolPaint.classList.toggle('active',t==='paint'); toolErase.classList.toggle('active',t==='erase')}
@@ -191,7 +198,6 @@
       if(o.meta.version>=4){
         for(let l=0;l<LAYERS;l++){ map.layers[l]=o.layers[l].map(r=>r.map(c=>makeTile(validType(c.t), c.s?1:0))) }
       } else {
-        // legacy int maps: treat "2" as solid WALL
         const WALL=(o.meta.tiles&&o.meta.tiles.WALL)||2;
         for(let l=0;l<LAYERS;l++){ map.layers[l]=o.layers[l].map(r=>r.map(v=>{const t=Number(v)|0; return makeTile(Object.values(TILES).includes(t)?t:TILES.GRASS, t===WALL?1:0)})) }
       }
@@ -199,7 +205,6 @@
     }catch(err){ alert('Import failed: '+err.message) } finally{ e.target.value='' }
   });
 
-  // Save to My Sets (home.html)
   const LS_SETS='gk_sets_v1';
   function getSets(){ try{ return JSON.parse(localStorage.getItem(LS_SETS))||[] }catch{ return [] } }
   function saveSets(arr){ localStorage.setItem(LS_SETS, JSON.stringify(arr)) }
@@ -215,9 +220,12 @@
     alert('Saved! Find it under “My Sets” on the Home page.');
   };
 
-  $('playBtn').onclick=()=>togglePlay();
+  const modeBtns = { }; // (kept simple; local modes were here, but play button still works for free roam)
+  let gameMode='free';
+  function setMode(m){ gameMode=m; }
 
-  // ===== INPUT =====
+  document.getElementById('playBtn').onclick=()=>togglePlay();
+
   addEventListener('contextmenu', e=>e.preventDefault());
   addEventListener('keydown', e=>{
     const k=e.key.toLowerCase();
@@ -253,7 +261,6 @@
   });
   addEventListener('mouseup', ()=>{ mouse.down=false; mouse.panning=false });
 
-  // ===== HELPERS =====
   function clamp(v,a,b){ return Math.max(a,Math.min(b,v)) }
   function inBounds(tx,ty){ return tx>=0&&ty>=0&&tx<MAP_W&&ty<MAP_H }
   function setCell(l,tx,ty,c){ if(inBounds(tx,ty)) map.layers[l][ty][tx]=c }
@@ -282,28 +289,43 @@
     if((orig-cur)*(val-orig)>0){ val=orig; newVel=0 } return {value:val, velocity:newVel};
   }
   function updateCamera(dt){
-    const cx=player.x + player.face.x*CAM.lookAhead, cy=player.y + player.face.y*CAM.lookAhead;
+    const cx=player.x + player.face.x*38, cy=player.y + player.face.y*38;
     const tx=clamp(cx - viewW()/2,0,Math.max(0,world.w-viewW()));
     const ty=clamp(cy - viewH()/2,0,Math.max(0,world.h-viewH()));
-    const sx=smoothDamp(camera.x,tx,camera.vx,CAM.smoothTime,CAM.maxSpeed,dt); camera.x=sx.value; camera.vx=sx.velocity;
-    const sy=smoothDamp(camera.y,ty,camera.vy,CAM.smoothTime,CAM.maxSpeed,dt); camera.y=sy.value; camera.vy=sy.velocity;
+    const sx=smoothDamp(camera.x,tx,camera.vx,0.14,6000,dt); camera.x=sx.value; camera.vx=sx.velocity;
+    const sy=smoothDamp(camera.y,ty,camera.vy,0.14,6000,dt); camera.y=sy.value; camera.vy=sy.velocity;
   }
-  function moveAndCollide(dx,dy){
-    const r=PLAYER.radius;
-    if(dx!==0){ let nx=player.x+dx;
-      if(dx>0){ const right=nx+r, tx=Math.floor(right/TILE), top=Math.floor((player.y-r)/TILE), bot=Math.floor((player.y+r-0.001)/TILE);
-        for(let ty=top;ty<=bot;ty++){ if(anySolidAt(tx,ty)){ nx=tx*TILE - r - .001; dx=0; break; } } }
-      else { const left=nx-r, tx=Math.floor(left/TILE), top=Math.floor((player.y-r)/TILE), bot=Math.floor((player.y+r-0.001)/TILE);
-        for(let ty=top;ty<=bot;ty++){ if(anySolidAt(tx,ty)){ nx=(tx+1)*TILE + r + .001; dx=0; break; } } }
-      player.x=nx; }
-    if(dy!==0){ let ny=player.y+dy;
-      if(dy>0){ const bottom=ny+r, ty=Math.floor(bottom/TILE), left=Math.floor((player.x-r)/TILE), right=Math.floor((player.x+r-0.001)/TILE);
-        for(let tx=left;tx<=right;tx++){ if(anySolidAt(tx,ty)){ ny=ty*TILE - r - .001; dy=0; break; } } }
-      else { const top=ny-r, ty=Math.floor(top/TILE), left=Math.floor((player.x-r)/TILE), right=Math.floor((player.x+r-0.001)/TILE);
-        for(let tx=left;tx<=right;tx++){ if(anySolidAt(tx,ty)){ ny=(ty+1)*TILE + r + .001; dy=0; break; } } }
-      player.y=ny; }
-    const rr=PLAYER.radius+2; player.x=clamp(player.x,rr,world.w-rr); player.y=clamp(player.y,rr,world.h-rr);
+  function moveAndCollideEntity(ent, dx,dy){
+    const r=ent.radius;
+    if(dx!==0){
+      let nx=ent.x+dx;
+      if(dx>0){
+        const right=nx+r; const tx=Math.floor(right/TILE);
+        const top=Math.floor((ent.y-r)/TILE), bot=Math.floor((ent.y+r-0.001)/TILE);
+        for(let ty=top;ty<=bot;ty++){ if(anySolidAt(tx,ty)){ nx=tx*TILE - r - .001; dx=0; break; } }
+      } else {
+        const left=nx-r; const tx=Math.floor(left/TILE);
+        const top=Math.floor((ent.y-r)/TILE), bot=Math.floor((ent.y+r-0.001)/TILE);
+        for(let ty=top;ty<=bot;ty++){ if(anySolidAt(tx,ty)){ nx=(tx+1)*TILE + r + .001; dx=0; break; } }
+      }
+      ent.x=nx;
+    }
+    if(dy!==0){
+      let ny=ent.y+dy;
+      if(dy>0){
+        const bottom=ny+r; const ty=Math.floor(bottom/TILE);
+        const left=Math.floor((ent.x-r)/TILE), right=Math.floor((ent.x+r-0.001)/TILE);
+        for(let tx=left;tx<=right;tx++){ if(anySolidAt(tx,ty)){ ny=ty*TILE - r - .001; dy=0; break; } }
+      } else {
+        const top=ny-r; const ty=Math.floor(top/TILE);
+        const left=Math.floor((ent.x-r)/TILE), right=Math.floor((ent.x+r-0.001)/TILE);
+        for(let tx=left;tx<=right;tx++){ if(anySolidAt(tx,ty)){ ny=(ty+1)*TILE + r + .001; dy=0; break; } }
+      }
+      ent.y=ny;
+    }
+    const rr=ent.radius+2; ent.x=clamp(ent.x,rr,world.w-rr); ent.y=clamp(ent.y,rr,world.h-rr);
   }
+  function moveAndCollide(dx,dy){ moveAndCollideEntity(player,dx,dy) }
 
   function viewW(){ return (cvs.width/DPR)/VIEW.zoom }
   function viewH(){ return (cvs.height/DPR)/VIEW.zoom }
@@ -345,38 +367,51 @@
     }
     if(!playtest){ const tx=Math.floor(mouse.worldX/TILE), ty=Math.floor(mouse.worldY/TILE); if(inBounds(tx,ty)){ const hx=tx*TILE-camera.x, hy=ty*TILE-camera.y; ctx.fillStyle=COLORS.hover; ctx.fillRect(hx,hy,TILE,TILE); } }
   }
-  function drawPlayer(){ const px=player.x-camera.x, py=player.y-camera.y, r=PLAYER.radius; ctx.fillStyle=PLAYER.color; ctx.beginPath(); ctx.arc(px,py,r,0,Math.PI*2); ctx.fill(); const a=Math.atan2(player.face.y,player.face.x); ctx.save(); ctx.translate(px,py); ctx.rotate(a); ctx.fillStyle="#1d213f"; ctx.beginPath(); ctx.moveTo(r*.9,0); ctx.lineTo(r*.2,6); ctx.lineTo(r*.2,-6); ctx.closePath(); ctx.fill(); ctx.restore(); ctx.fillStyle="rgba(0,0,0,0.25)"; ctx.beginPath(); ctx.ellipse(px,py+r*.55,r*.9,r*.45,0,0,Math.PI*2); ctx.fill(); }
+  function drawPlayer(ent=player){
+    const px=ent.x-camera.x, py=ent.y-camera.y, r=ent.radius;
+    ctx.fillStyle=ent.color||PLAYER.color; ctx.beginPath(); ctx.arc(px,py,r,0,Math.PI*2); ctx.fill();
+    if(ent===player){
+      const a=Math.atan2(player.face.y,player.face.x); ctx.save(); ctx.translate(px,py); ctx.rotate(a);
+      ctx.fillStyle="#1d213f"; ctx.beginPath(); ctx.moveTo(r*.9,0); ctx.lineTo(r*.2,6); ctx.lineTo(r*.2,-6); ctx.closePath(); ctx.fill(); ctx.restore();
+    }
+    if(ent.name){ ctx.fillStyle="rgba(0,0,0,.35)"; ctx.fillRect(px-20,py-r-18,40,14); ctx.fillStyle="#fff"; ctx.font="10px system-ui"; ctx.textAlign="center"; ctx.fillText(ent.name, px, py-r-7); }
+  }
 
-  // ===== LOOP =====
   let last=performance.now(), fps=0, acc=0, frames=0; const badge=document.getElementById('badge');
   function tick(now){
     const dt=Math.min(.033,(now-last)/1000); last=now;
     acc+=dt; frames++; if(acc>=.5){ fps=Math.round(frames/acc); frames=0; acc=0; badge.textContent=`${fps} fps ${playtest?'• PLAY':'• EDIT'} • zoom ${VIEW.zoom.toFixed(2)}x • L${currentLayer} • Solid:${brushSolid?'On':'Off'}` }
+
     ctx.setTransform(DPR,0,0,DPR,0,0); ctx.clearRect(0,0,cvs.width/DPR,cvs.height/DPR);
     ctx.save(); ctx.scale(VIEW.zoom,VIEW.zoom);
+
     if(playtest){
       const ax=(keys.has('d')||keys.has('arrowright')?1:0)-(keys.has('a')||keys.has('arrowleft')?1:0);
       const ay=(keys.has('s')||keys.has('arrowdown')?1:0)-(keys.has('w')||keys.has('arrowup')?1:0);
       let len=Math.hypot(ax,ay), dx=0, dy=0; if(len){ dx=ax/len; dy=ay/len; player.face={x:dx,y:dy} }
-      const speed=PLAYER.baseSpeed*(keys.has('shift')?PLAYER.sprintMult:1); moveAndCollide(dx*speed*dt, dy*speed*dt); updateCamera(dt);
+      const speed=PLAYER.baseSpeed*(keys.has('shift')?PLAYER.sprintMult:1);
+      moveAndCollide(dx*speed*dt, dy*speed*dt);
+      updateCamera(dt);
     }
-    drawWorld(); if(playtest) drawPlayer();
-    ctx.restore(); requestAnimationFrame(tick);
+
+    drawWorld();
+    if(playtest) drawPlayer();
+
+    ctx.restore();
+    requestAnimationFrame(tick);
   }
   requestAnimationFrame(tick);
 
-  // ===== AUTOSAVE =====
   const AUTOKEY='topdown_map_autosave_v4';
   function saveAutosave(force=false){ try{ localStorage.setItem(AUTOKEY, JSON.stringify(map)); if(force) console.log('Autosave loaded') }catch{} }
   let saveTimer=null; function saveAutosaveDebounced(){ clearTimeout(saveTimer); saveTimer=setTimeout(saveAutosave,400) }
   try{ const raw=localStorage.getItem(AUTOKEY); if(raw){ const obj=JSON.parse(raw); if(obj?.layers?.length===LAYERS && obj.meta?.version>=4){ for(let l=0;l<LAYERS;l++) map.layers[l]=obj.layers[l].map(r=>r.map(c=>makeTile(validType(c.t), c.s?1:0))) } } }catch{}
 
-  function togglePlay(){ playtest=!playtest; if(playtest){ camera.x=clamp(player.x-viewW()/2,0,Math.max(0,world.w-viewW())); camera.y=clamp(player.y-viewH()/2,0,Math.max(0,world.h-viewH())); camera.vx=camera.vy=0 } document.getElementById('playBtn').textContent=playtest?'■ Stop':'▶ Playtest' }
+  function togglePlay(){ playtest=!playtest; if(playtest){ camera.x=clamp(player.x-viewW()/2,0,Math.max(0,world.w-viewW())); camera.y=clamp(player.y-viewH()/2,0,Math.max(0,world.h-viewH())); camera.vx=camera.vy=0 } document.getElementById('playBtn').textContent=playtest?'■ Stop':'▶ Play / Stop'; }
 
-  // ===== PARAM LOADER: template|setId|room =====
   const params = new URLSearchParams(location.search);
   const template = params.get('template'); const setId = params.get('setId'); const room = params.get('room');
-  if(room){ console.log('Joined room code:', room, '(placeholder — no server)'); }
+  if(room){ console.log('Joined room code:', room, '(placeholder)'); }
   if(setId){
     const sets = (function(){ try{ return JSON.parse(localStorage.getItem('gk_sets_v1'))||[] }catch{ return [] }})();
     const s = sets.find(x=>x.id===setId);
@@ -388,6 +423,17 @@
     }
   } else if(template){ applyTemplate(template) }
 
+  function forEachTile(cb){ for(let y=0;y<MAP_H;y++) for(let x=0;x<MAP_W;x++) cb(x,y) }
+  function fillRect(x0,y0,w,h,fn){ for(let y=y0;y<y0+h;y++) for(let x=x0;x<x0+w;x++) map.layers[0][y][x]=fn(x,y) }
+  function riverHorizontal(yStart, thickness){ for(let y=yStart;y<yStart+thickness;y++) for(let x=0;x<MAP_W;x++) map.layers[0][y][x]=makeTile(TILES.WATER,0) }
+  function noisePatch(type, density){ forEachTile((x,y)=>{ if(Math.random()<density) map.layers[0][y][x]=makeTile(type,0) }) }
+  function blobbyIsland(cx,cy,r,edgeType,coreType){
+    forEachTile((x,y)=>{ const dx=x-cx, dy=y-cy; const d=Math.hypot(dx,dy) + (Math.sin(x*0.7)+Math.cos(y*.6))*0.6;
+      if(d<r*0.9) map.layers[0][y][x]=makeTile(coreType,0); else if(d<r*1.02) map.layers[0][y][x]=makeTile(edgeType,0);
+    });
+  }
+  function frameWalls(th){ for(let t=0;t<th;t++){ for(let x=0;x<MAP_W;x++){ map.layers[0][t][x]=makeTile(TILES.STONE,1); map.layers[0][MAP_H-1-t][x]=makeTile(TILES.STONE,1) }
+    for(let y=0;y<MAP_H;y++){ map.layers[0][y][t]=makeTile(TILES.STONE,1); map.layers[0][y][MAP_W-1-t]=makeTile(TILES.STONE,1) } } }
   function applyTemplate(key){
     for(let l=0;l<LAYERS;l++) map.layers[l]=make2D(MAP_W,MAP_H,()=>makeTile());
     if(key==='meadow'){
@@ -403,20 +449,8 @@
     }
     saveAutosave(true);
   }
-  function forEachTile(cb){ for(let y=0;y<MAP_H;y++) for(let x=0;x<MAP_W;x++) cb(x,y) }
-  function fillRect(x0,y0,w,h,fn){ for(let y=y0;y<y0+h;y++) for(let x=x0;x<x0+w;x++) map.layers[0][y][x]=fn(x,y) }
-  function riverHorizontal(yStart, thickness){ for(let y=yStart;y<yStart+thickness;y++) for(let x=0;x<MAP_W;x++) map.layers[0][y][x]=makeTile(TILES.WATER,0) }
-  function noisePatch(type, density){ forEachTile((x,y)=>{ if(Math.random()<density) map.layers[0][y][x]=makeTile(type,0) }) }
-  function blobbyIsland(cx,cy,r,edgeType,coreType){
-    forEachTile((x,y)=>{ const dx=x-cx, dy=y-cy; const d=Math.hypot(dx,dy) + (Math.sin(x*0.7)+Math.cos(y*.6))*0.6;
-      if(d<r*0.9) map.layers[0][y][x]=makeTile(coreType,0); else if(d<r*1.02) map.layers[0][y][x]=makeTile(edgeType,0);
-    });
-  }
-  function frameWalls(th){ for(let t=0;t<th;t++){ for(let x=0;x<MAP_W;x++){ map.layers[0][t][x]=makeTile(TILES.STONE,1); map.layers[0][MAP_H-1-t][x]=makeTile(TILES.STONE,1) }
-    for(let y=0;y<MAP_H;y++){ map.layers[0][y][t]=makeTile(TILES.STONE,1); map.layers[0][y][MAP_W-1-t]=makeTile(TILES.STONE,1) } } }
 
-  // small utilities shared above
-  function viewW(){ return (cvs.width/DPR)/VIEW.zoom } // (redeclared for hoist clarity)
+  function download(name,text){ const blob=new Blob([text],{type:"application/json"}); const url=URL.createObjectURL(blob); const a=document.createElement("a"); a.href=url;a.download=name;a.click();URL.revokeObjectURL(url) }
 })();
 </script>
 </body>
