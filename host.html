@@ -20,8 +20,11 @@
   .bigcode{font-size:42px;letter-spacing:6px;text-align:center;margin:6px 0}
   table{width:100%;border-collapse:collapse} th,td{padding:10px;border-bottom:1px solid var(--border);text-align:left}
   .muted{color:var(--muted)} .qbox{background:#fff;border:1px dashed var(--border);border-radius:12px;padding:12px}
+  .pill{padding:6px 10px;border-radius:999px;border:1px solid var(--border);background:#fff}
+  .ok{color:#1f8a4c;border-color:#bfe7cf;background:#eefaf3}
+  .bad{color:#b23b3b;border-color:#f1c0c0;background:#fff3f3}
   .err{background:#fff3f3;border:1px solid #ffcfcf;color:#8b1a1a;padding:10px;border-radius:12px;display:none}
-  .ok{color:#22a06b;font-weight:700}
+  .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace}
 </style>
 </head>
 <body>
@@ -34,7 +37,7 @@
   </div>
 </header>
 
-<!-- Load sets; we have a fallback if this file is missing -->
+<!-- Optional external sets; we also have a fallback if this fails -->
 <script src="./question_sets.js"></script>
 
 <main>
@@ -50,18 +53,18 @@
       </select>
       <button class="primary" id="createBtn">Create Game</button>
     </div>
-    <div class="muted">Pick a set and gamemode, then create the room. You’ll get a 6-digit code.</div>
+    <div class="muted">After you click Create, you’ll see the room code immediately. DB sync happens in the background.</div>
   </section>
 
   <!-- Lobby -->
   <section class="card" id="lobbyCard" style="display:none">
     <h2>Lobby</h2>
-    <div class="bigcode" id="roomCode">— — — — — —</div>
+    <div class="bigcode mono" id="roomCode">— — — — — —</div>
     <div class="row">
       <button id="copyLinkBtn">Copy Player Link</button>
       <span class="muted" id="joinCount">0 player(s) connected</span>
       <span class="muted">•</span>
-      <span class="ok" id="fbOk" style="display:none">Connected</span>
+      <span class="pill" id="connPill">Checking…</span>
     </div>
 
     <div class="qbox">
@@ -70,6 +73,9 @@
         <thead><tr><th>#</th><th>Name</th><th>Score</th></tr></thead>
         <tbody id="boardBody"></tbody>
       </table>
+      <div class="muted" id="offlineNote" style="display:none;margin-top:8px">
+        Offline demo mode — players can’t join until Firebase works.
+      </div>
     </div>
 
     <div class="row">
@@ -78,11 +84,11 @@
     </div>
   </section>
 
-  <!-- Host control during game -->
+  <!-- Host controls -->
   <section class="card" id="controlCard" style="display:none">
     <h2>Host Controls</h2>
     <div class="qbox" id="qArea">
-      <div id="qTitle" class="muted">Press “Next Question”.</div>
+      <div id="qTitle" class="muted">Press “Start Game”, then “Next Question”.</div>
       <ol id="qChoices" style="margin:8px 0 0 18px"></ol>
     </div>
     <div class="row">
@@ -114,7 +120,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db  = getFirestore(app);
 
-/* ---------- Helpers & UI ---------- */
+/* ---------- UI helpers ---------- */
 const $ = s=>document.querySelector(s);
 const errBox = $("#err");
 const ui = {
@@ -133,16 +139,25 @@ const ui = {
   boardBody: $("#boardBody"),
   startBtn: $("#startBtn"),
   endBtn: $("#endBtn"),
-  fbOk: $("#fbOk"),
+  connPill: $("#connPill"),
+  offlineNote: $("#offlineNote"),
   // control
   qTitle: $("#qTitle"),
   qChoices: $("#qChoices"),
   nextBtn: $("#nextBtn"),
-  backToLobbyBtn: $("#backToLobbyBtn")
+  backToLobbyBtn: $("#backToLobbyBtn"),
 };
+
 function showErr(msg){ errBox.style.display=""; errBox.textContent=msg; console.error(msg); }
 function hideErr(){ errBox.style.display="none"; errBox.textContent=""; }
+function setConn(ok,msg){
+  ui.connPill.textContent = ok ? (msg||"Connected") : (msg||"Offline");
+  ui.connPill.className = "pill " + (ok?"ok":"bad");
+  ui.offlineNote.style.display = ok ? "none":"";
+}
+function escapeHtml(s){ return String(s).replace(/[&<>"]/g, c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])) }
 
+/* ---------- Sets (with fallback) ---------- */
 const FALLBACK_SETS = [
   { id:"demo-math", name:"Quick Math", questions:[
     {q:"2 + 2 = ?", choices:["3","4","5"], correct:1},
@@ -156,111 +171,117 @@ const getSetById = id => SETS.find(s=>s.id===id);
 
 /* ---------- Room state ---------- */
 let roomRef=null, code=null, currentSet=null, round=0, stopPlayers=null, stopRoomSnap=null, stopAnswers=null;
+let online=false;
 
-/* ---------- Create flow ---------- */
+/* Quick connectivity probe (read-only is enough to verify SDK) */
+(async ()=>{
+  try{
+    await getDoc(doc(db,"__ping__","ping")); // may be missing, that's fine
+    setConn(true,"Ready");
+    online = true;
+  }catch(e){
+    console.warn("Ping failed:", e);
+    setConn(false,"Offline (DB unreachable)");
+    online = false;
+  }
+})();
+
+/* Create -> show UI immediately, then try to sync DB */
 ui.createBtn.onclick = async ()=>{
   hideErr();
+  currentSet = getSetById(ui.setSel.value);
+  if(!currentSet){ showErr("Pick a set first."); return; }
+
+  code = genCode(6);
+  roomRef = doc(db, "rooms", code);
+
+  // 1) Optimistic UI reveal (no waiting)
+  ui.roomCode.textContent = code;
+  ui.lobbyCard.style.display = "";
+  ui.controlCard.style.display = "";
+  ui.nextBtn.disabled = true; // locked until Start
+
+  // 2) Try to write to Firestore (if it fails, we remain in offline demo mode)
   try{
-    currentSet = getSetById(ui.setSel.value);
-    if(!currentSet){ showErr("Pick a set first."); return; }
-
-    code = genCode(6);
-    roomRef = doc(db, "rooms", code);
-
     await setDoc(roomRef, {
       mode: ui.modeSel.value,
       setId: currentSet.id,
       hostName: ui.hostName.value || "Host",
-      status: "lobby",       // <- lobby until you click Start
+      status: "lobby",
       round: 0,
       createdAt: serverTimestamp()
     });
+    setConn(true,"Connected");
+    online = true;
 
-    // Immediately reveal lobby UI (code + players)
-    ui.roomCode.textContent = code;
-    ui.creator.style.display = "";
-    ui.lobbyCard.style.display = "";
-    ui.controlCard.style.display = ""; // visible, but Next disabled until Start
-    ui.nextBtn.disabled = true;
-
-    // live players/leaderboard
+    // Live players
     if(stopPlayers) stopPlayers();
     const playersQ = query(collection(roomRef, "players"), orderBy("score","desc"));
     stopPlayers = onSnapshot(playersQ, snap=>{
-      const rows=[];
-      snap.forEach(d=>rows.push({id:d.id, ...d.data()}));
+      const rows=[]; snap.forEach(d=>rows.push({id:d.id, ...d.data()}));
       ui.joinCount.textContent = `${rows.length} player(s) connected`;
       ui.boardBody.innerHTML = rows.map((r,i)=>`<tr><td>${i+1}</td><td>${escapeHtml(r.name||"Player")}</td><td>${r.score||0}</td></tr>`).join("");
-      ui.fbOk.style.display = ""; // we’re getting snapshots, so connection is OK
-    }, err=> showErr("Players stream error: "+err.message));
+    }, err=> { setConn(false,"Offline"); showErr("Players stream error: "+err.message) });
 
-    // keep round/status in sync (e.g., if you open another host tab)
+    // Room watcher
     if(stopRoomSnap) stopRoomSnap();
     stopRoomSnap = onSnapshot(roomRef, snap=>{
       const data = snap.data(); if(!data) return;
       round = data.round|0;
-      if(data.status==="lobby"){
-        ui.nextBtn.disabled = true;
-        ui.qTitle.textContent = "Waiting in lobby. Click Start when ready.";
-        ui.qChoices.innerHTML = "";
-      } else if(data.status==="question" && data.question){
+      if(data.status==="lobby"){ ui.nextBtn.disabled = true; ui.qTitle.textContent = "Waiting in lobby. Click Start when ready."; ui.qChoices.innerHTML=""; }
+      else if(data.status==="question" && data.question){
         ui.nextBtn.disabled = false;
         ui.qTitle.textContent = `Q${data.question.n}: ${data.question.q}`;
         ui.qChoices.innerHTML = data.question.choices.map((c,i)=>`<li>${escapeHtml(c)}${i===data.question.answerIndex?" ✓":""}</li>`).join("");
-      } else if(data.status==="started"){
-        // Started but no question yet
-        ui.nextBtn.disabled = false;
-        ui.qTitle.textContent = "Game started. Press Next Question.";
-        ui.qChoices.innerHTML = "";
-      } else if(data.status==="ended"){
-        ui.nextBtn.disabled = true;
-        ui.qTitle.textContent = "Game ended.";
-        ui.qChoices.innerHTML = "";
-      }
-    }, err=> showErr("Room stream error: "+err.message));
+      } else if(data.status==="started"){ ui.nextBtn.disabled = false; ui.qTitle.textContent = "Game started. Press Next Question."; ui.qChoices.innerHTML=""; }
+      else if(data.status==="ended"){ ui.nextBtn.disabled = true; ui.qTitle.textContent = "Game ended."; ui.qChoices.innerHTML=""; }
+    }, err=> { setConn(false,"Offline"); showErr("Room stream error: "+err.message) });
 
   }catch(err){
-    showErr("Create Game failed: "+ (err?.message||err));
+    setConn(false,"Offline (DB write failed)");
+    online = false;
+    console.warn("Create Game failed; staying in offline demo mode:", err);
+    // Keep lobby visible so it "changes to something".
   }
 };
 
-/* ---------- Lobby actions ---------- */
+/* Lobby actions */
 ui.copyLinkBtn.onclick = async ()=>{
-  try{
-    const url = `${location.origin}${location.pathname.replace("host.html","")}player.html?code=${code||''}`;
-    await navigator.clipboard.writeText(url);
-    alert("Copied join link:\n"+url);
-  }catch(err){ showErr("Clipboard error: "+err.message); }
+  const url = `${location.origin}${location.pathname.replace("host.html","")}player.html?code=${code||''}`;
+  try{ await navigator.clipboard.writeText(url); alert("Copied join link:\n"+url); }
+  catch(e){ showErr("Clipboard error: "+e.message+"\nJoin link:\n"+url); }
 };
 
 ui.startBtn.onclick = async ()=>{
+  if(!roomRef){ showErr("No room created."); return; }
+  if(!online){ showErr("Offline: cannot start until Firebase is reachable."); return; }
   try{
-    if(!roomRef) return showErr("No room created yet.");
-    await updateDoc(roomRef, { status: "started", round: 0 });
-    ui.nextBtn.disabled = false; // you can now send first question
+    await updateDoc(roomRef, { status:"started", round:0, question:null });
+    ui.nextBtn.disabled = false;
   }catch(err){ showErr("Start Game failed: "+err.message); }
 };
 
 ui.backToLobbyBtn.onclick = async ()=>{
-  try{
-    if(!roomRef) return;
-    await updateDoc(roomRef, { status:"lobby", round: 0, question: null });
-  }catch(err){ showErr("Back to Lobby failed: "+err.message); }
+  if(!roomRef || !online) return;
+  try{ await updateDoc(roomRef, { status:"lobby", round:0, question:null }); }
+  catch(err){ showErr("Back to Lobby failed: "+err.message); }
 };
 
 ui.endBtn.onclick = async ()=>{
+  if(!roomRef || !online) return;
   try{
-    if(!roomRef) return;
     await updateDoc(roomRef, { status:"ended" });
     if(stopAnswers) stopAnswers();
     alert("Game ended.");
   }catch(err){ showErr("End Game failed: "+err.message); }
 };
 
-/* ---------- Questions ---------- */
+/* Questions */
 ui.nextBtn.onclick = async ()=>{
+  if(!roomRef || !currentSet){ showErr("No room / set."); return; }
+  if(!online){ showErr("Offline: cannot send questions until Firebase works."); return; }
+
   try{
-    if(!roomRef || !currentSet) return;
     const idx = (round) % currentSet.questions.length;
     const q = currentSet.questions[idx];
     round++;
@@ -271,7 +292,6 @@ ui.nextBtn.onclick = async ()=>{
       question: { n: round, q: q.q, choices: q.choices, answerIndex: q.correct }
     });
 
-    // score answers as they arrive for this round
     if(stopAnswers) stopAnswers();
     const answersQ = query(collection(roomRef,"answers"), where("round","==", round));
     stopAnswers = onSnapshot(answersQ, (snap)=>{
@@ -299,13 +319,12 @@ ui.nextBtn.onclick = async ()=>{
   }catch(err){ showErr("Next Question failed: "+err.message); }
 };
 
-/* ---------- Utils ---------- */
+/* Utils */
 function genCode(len=6){
   const chars="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let out=""; for(let i=0;i<len;i++) out+=chars[Math.floor(Math.random()*chars.length)];
   return out;
 }
-function escapeHtml(s){ return String(s).replace(/[&<>"]/g, c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])) }
 
 /* Surface unexpected errors to the red box */
 addEventListener('error', e=> showErr(`Script error: ${e.message}`));
