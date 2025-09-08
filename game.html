@@ -1,1 +1,472 @@
 
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Top-Down Map Editor — 5 Layers (Walls Collide, Smooth Camera)</title>
+<style>
+  :root {
+    --bg:#0f1020; --ink:#e8e9ff; --muted:#a3a9bd; --panel:rgba(22,24,42,.55); --accent:#7c93ff;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font:500 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif}
+  canvas{display:block;width:100vw;height:100vh;background:#0d0f1d;image-rendering:pixelated;cursor:crosshair}
+
+  .ui{
+    position:fixed;inset:12px auto auto 12px;width:330px;max-height:calc(100dvh - 24px);
+    display:grid;gap:10px;padding:12px;border-radius:14px;background:var(--panel);backdrop-filter:blur(10px);
+    border:1px solid rgba(124,147,255,.25);box-shadow:0 20px 50px rgba(0,0,0,.35);overflow:auto
+  }
+  h1{margin:0 0 6px;font-size:15px;color:var(--accent);letter-spacing:.3px}
+  .sub{color:var(--muted);margin-top:-4px}
+  .row{display:grid;gap:8px}.cols{grid-template-columns:repeat(3,1fr)}
+  .btn,.chip, .seg button{border:1px solid rgba(255,255,255,.12);background:#11152a;color:var(--ink);padding:8px 10px;border-radius:10px;cursor:pointer}
+  .btn:hover,.chip:hover,.seg button:hover{background:#141936}
+  .seg{display:flex;gap:6px;flex-wrap:wrap}
+  .active{background:#1a2144;border-color:rgba(124,147,255,.45);color:var(--accent)}
+  .kbd{background:rgba(255,255,255,.08);padding:2px 6px;border-radius:6px;border:1px solid rgba(255,255,255,.12)}
+  .layers{display:grid;gap:6px}
+  .layer{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:8px;padding:6px 8px;border-radius:10px;background:#0f1430;border:1px solid rgba(255,255,255,.08)}
+  .name{font-weight:600}
+  .legend{display:flex;gap:8px;flex-wrap:wrap}
+  .chip{display:flex;align-items:center;gap:8px}
+  .swatch{width:14px;height:14px;border-radius:4px;border:1px solid rgba(255,255,255,.25)}
+  .hint{color:var(--muted);font-size:12px}
+  .badge{position:fixed;right:12px;bottom:10px;font-variant-numeric:tabular-nums;color:var(--muted);background:rgba(255,255,255,.05);padding:6px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.1)}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div class="ui" id="panel">
+  <div>
+    <h1>Map Editor — 5 Layers</h1>
+    <div class="sub">Left-click paint • Right-click erase • <span class="kbd">Space</span>+drag pan • <span class="kbd">=</span>/<span class="kbd">-</span>/<span class="kbd">0</span> zoom • <span class="kbd">1–5</span> layer</div>
+  </div>
+
+  <div class="row">
+    <div class="legend">
+      <button class="chip active" data-tool="paint" id="tool-paint"><span class="swatch" style="background:linear-gradient(45deg,#232746 50%,#3b4274 0)"></span> Paint</button>
+      <button class="chip" data-tool="erase" id="tool-erase"><span class="swatch" style="background:transparent"></span> Erase</button>
+    </div>
+    <div class="legend">
+      <button class="chip active" data-tile="floor" id="tile-floor"><span class="swatch" style="background:linear-gradient(45deg,#1a1c33 50%,#17182c 0)"></span> Floor</button>
+      <button class="chip" data-tile="wall" id="tile-wall"><span class="swatch" style="background:#3b4274"></span> Wall (collides)</button>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="layers" id="layerBtns"></div>
+    <div class="hint">Layer 1 = bottom, Layer 5 = top. Visibility toggles only affect the editor view.</div>
+  </div>
+
+  <div class="row cols">
+    <button class="btn" id="clearLayerBtn">Clear Layer</button>
+    <button class="btn" id="clearAllBtn">Clear All</button>
+    <button class="btn" id="toggleGridBtn">Grid</button>
+  </div>
+
+  <div class="row">
+    <div class="seg">
+      <button class="btn" id="exportBtn">Export JSON</button>
+      <button class="btn" id="copyBtn">Copy JSON</button>
+      <button class="btn" id="importBtn">Import JSON</button>
+      <input class="hidden" type="file" id="fileInput" accept="application/json">
+    </div>
+    <div class="hint">Autosaves locally every few seconds.</div>
+  </div>
+
+  <div class="row">
+    <div class="seg">
+      <button class="btn" id="playBtn">▶ Playtest</button>
+      <span class="hint">WASD/Arrows • Shift to sprint. Camera follows smoothly.</span>
+    </div>
+  </div>
+</div>
+
+<div class="badge" id="badge">0 fps</div>
+
+<script>
+(() => {
+  // ===== CONFIG =====
+  const TILE = 48;
+  const MAP_W = 60, MAP_H = 34;
+  const LAYERS = 5;              // 1..5 (1 bottom)
+  const VIEW = { zoom: 1.8, min: 0.9, max: 3.5, step: 0.1, def: 1.8 };
+  const PLAYER = { radius: 14, baseSpeed: 170, sprintMult: 1.45, color: "#ffd86b" };
+
+  const COLORS = {
+    floorA:"#1a1c33", floorB:"#17182c",
+    wallTop:"#4a579a", wallFace:"#2a2f55", wallOutline:"#a9b1ff",
+    wallEdge:"rgba(0,0,0,0.40)", wallHatch:"rgba(255,255,255,0.07)",
+    grid:"rgba(255,255,255,0.06)", hover:"rgba(124,147,255,0.28)"
+  };
+
+  // ===== STATE =====
+  let DPR = 1;
+  const cvs = document.getElementById("game");
+  const ctx = cvs.getContext("2d");
+  function resize(){DPR=Math.max(1,Math.min(2,window.devicePixelRatio||1));cvs.width=Math.floor(innerWidth*DPR);cvs.height=Math.floor(innerHeight*DPR);ctx.setTransform(DPR,0,0,DPR,0,0)}
+  addEventListener("resize", resize, {passive:true}); resize();
+
+  const map = { layers: Array.from({length:LAYERS},()=>make2D(MAP_W,MAP_H,0)), meta:{w:MAP_W,h:MAP_H,tile:TILE,version:2} };
+  const world = { w: MAP_W * TILE, h: MAP_H * TILE };
+
+  const camera = { x:0, y:0, vx:0, vy:0 };
+  const CAM = { smoothTime:0.14, maxSpeed:6000, lookAhead:38 }; // tuned to feel clearly following
+
+  const player = { x:TILE*3, y:TILE*3, face:{x:1,y:0} };
+  let playtest=false, showGrid=true, currentLayer=1, tool="paint", tileType="floor";
+
+  const keys = new Set();
+  const mouse = { down:false, button:0, panning:false, panStart:{x:0,y:0}, camStart:{x:0,y:0}, worldX:0, worldY:0, tx:-1, ty:-1 };
+
+  // ===== UI WIRING =====
+  const q = (id)=>document.getElementById(id);
+  const layerBtns = q("layerBtns"), layerUI=[];
+  for (let i=1;i<=LAYERS;i++){
+    const row=document.createElement("div");row.className="layer";
+    const eye=document.createElement("input");eye.type="checkbox";eye.checked=true;eye.title="Toggle layer visibility";
+    const name=document.createElement("div");name.className="name";name.textContent=`Layer ${i}${i===1?' (bottom)':''}${i===5?' (top)':''}`;
+    const pick=document.createElement("button");pick.className="btn";pick.textContent="Select";pick.onclick=()=>setLayer(i);
+    eye.onchange=()=>{layerUI[i-1].visible=eye.checked};
+    row.append(eye,name,pick); layerBtns.appendChild(row); layerUI.push({visible:true,eye,pick});
+  }
+  function setLayer(n){currentLayer=n;layerUI.forEach((L,idx)=>L.pick.classList.toggle("active",idx===n-1))}
+  setLayer(1);
+
+  const toolPaint=q("tool-paint"), toolErase=q("tool-erase"), tileFloor=q("tile-floor"), tileWall=q("tile-wall");
+  function setTool(t){tool=t;toolPaint.classList.toggle("active",tool==="paint");toolErase.classList.toggle("active",tool==="erase")}
+  function setTile(t){tileType=t;tileFloor.classList.toggle("active",tileType==="floor");tileWall.classList.toggle("active",tileType==="wall")}
+  setTool("paint"); setTile("floor");
+  toolPaint.onclick=()=>setTool("paint"); toolErase.onclick=()=>setTool("erase");
+  tileFloor.onclick=()=>setTile("floor"); tileWall.onclick=()=>setTile("wall");
+
+  q("clearLayerBtn").onclick=()=>{map.layers[currentLayer-1]=make2D(MAP_W,MAP_H,0);saveAutosave()};
+  q("clearAllBtn").onclick=()=>{for(let i=0;i<LAYERS;i++)map.layers[i]=make2D(MAP_W,MAP_H,0);saveAutosave()};
+  q("toggleGridBtn").onclick=()=>{showGrid=!showGrid};
+  q("exportBtn").onclick=()=>download("map.json", JSON.stringify(map));
+  q("copyBtn").onclick=async()=>{try{await navigator.clipboard.writeText(JSON.stringify(map));alert("Copied JSON")}catch{alert("Clipboard blocked; use Export JSON")}};
+  q("importBtn").onclick=()=>q("fileInput").click();
+  q("fileInput").addEventListener("change",async(e)=>{const f=e.target.files[0];if(!f)return;try{const t=await f.text();const o=JSON.parse(t);if(!o.layers||!o.meta)throw new Error("Invalid");if(o.meta.w!==MAP_W||o.meta.h!==MAP_H||o.meta.tile!==TILE)throw new Error("Size mismatch");for(let l=0;l<LAYERS;l++)map.layers[l]=o.layers[l].map(r=>r.map(v=>clampi(v,0,2)));saveAutosave(true)}catch(err){alert("Import failed: "+err.message)}finally{e.target.value=""}});
+  q("playBtn").onclick=()=>togglePlay();
+
+  // ===== INPUT =====
+  addEventListener("contextmenu", e=>e.preventDefault());
+  addEventListener("keydown", (e)=>{
+    const k=e.key.toLowerCase();
+    if(["w","a","s","d","arrowup","arrowdown","arrowleft","arrowright"," "].includes(k)) e.preventDefault();
+    if(["-","=","0"].includes(e.key)) e.preventDefault();
+    if(k>="1"&&k<="5") setLayer(Number(k));
+    if(k==="f") setTile("floor");
+    if(k==="w") setTile("wall");
+    if(k==="e") setTool("erase");
+    if(k==="g") showGrid=!showGrid;
+    if(k==="p") togglePlay();
+
+    // zoom
+    if(e.key==="="||e.key==="+") VIEW.zoom=clamp(VIEW.zoom+VIEW.step,VIEW.min,VIEW.max);
+    if(e.key==="-"||e.key==="_") VIEW.zoom=clamp(VIEW.zoom-VIEW.step,VIEW.min,VIEW.max);
+    if(e.key==="0") VIEW.zoom=VIEW.def;
+
+    keys.add(k);
+  }, {capture:true});
+  addEventListener("keyup",(e)=>{keys.delete(e.key.toLowerCase())},{capture:true});
+
+  cvs.addEventListener("mousedown",(e)=>{
+    const pos=screenToWorld(e.offsetX,e.offsetY);
+    mouse.down=true;mouse.button=e.button;mouse.tx=-1;mouse.ty=-1;
+
+    // pan if middle or space+left
+    if(e.button===1 || (e.button===0 && keys.has(" "))){
+      mouse.panning=true;mouse.panStart={x:e.clientX,y:e.clientY};mouse.camStart={x:camera.x,y:camera.y};return;
+    }
+    handlePaint(pos.tx,pos.ty,e.button);
+  });
+  cvs.addEventListener("mousemove",(e)=>{
+    const pos=screenToWorld(e.offsetX,e.offsetY);
+    mouse.worldX=pos.x; mouse.worldY=pos.y;
+
+    if(mouse.panning){
+      const dx=(e.clientX-mouse.panStart.x)/VIEW.zoom;
+      const dy=(e.clientY-mouse.panStart.y)/VIEW.zoom;
+      camera.x=clamp(mouse.camStart.x-dx,0,world.w-viewW());
+      camera.y=clamp(mouse.camStart.y-dy,0,world.h-viewH());
+      return;
+    }
+
+    if(mouse.down && mouse.button!==1 && !(mouse.button===0 && keys.has(" "))){
+      handlePaint(pos.tx,pos.ty,mouse.button);
+    }
+  });
+  addEventListener("mouseup",()=>{mouse.down=false;mouse.panning=false});
+
+  // ===== MAP HELPERS =====
+  function make2D(w,h,val){return Array.from({length:h},()=>Array.from({length:w},()=>val))}
+  function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
+  function clampi(v,a,b){v=v|0; return v<a?a:(v>b?b:v)}
+  function inBounds(tx,ty){return tx>=0&&ty>=0&&tx<MAP_W&&ty<MAP_H}
+  function setTileAt(l,tx,ty,code){ if(inBounds(tx,ty)) map.layers[l][ty][tx]=code }
+  function getTileAt(l,tx,ty){ return inBounds(tx,ty)?map.layers[l][ty][tx]:0 }
+  function anyWallAtTile(tx,ty){ if(!inBounds(tx,ty)) return false; for(let l=0;l<LAYERS;l++){ if(map.layers[l][ty][tx]===2) return true } return false }
+
+  function handlePaint(tx,ty,button){
+    if(!inBounds(tx,ty)) return;
+    if(mouse.tx===tx && mouse.ty===ty) return;
+    mouse.tx=tx; mouse.ty=ty;
+
+    if(button===2 || tool==="erase"){ setTileAt(currentLayer-1,tx,ty,0); saveAutosaveDebounced(); return; }
+    const code = (tileType==="floor") ? 1 : 2;
+    setTileAt(currentLayer-1,tx,ty,code);
+    saveAutosaveDebounced();
+  }
+
+  // ===== CAMERA (true follow with look-ahead) =====
+  function smoothDamp(current,target,velocity,smoothTime,maxSpeed,dt){
+    smoothTime=Math.max(0.0001,smoothTime);
+    const omega=2/smoothTime, x=omega*dt, exp=1/(1+x+0.48*x*x+0.235*x*x*x);
+    let change=current-target; const originalTo=target;
+    const maxChange=maxSpeed*smoothTime;
+    if(change> maxChange) change= maxChange;
+    if(change<-maxChange) change=-maxChange;
+    target=current-change;
+    const temp=(velocity+omega*change)*dt;
+    let newVel=(velocity-omega*temp)*exp;
+    let newVal=target+(change+temp)*exp;
+    if((originalTo-current)*(newVal-originalTo)>0){newVal=originalTo;newVel=0}
+    return {value:newVal, velocity:newVel};
+  }
+
+  function updateCamera(dt){
+    // Desired center = player + look-ahead
+    const centerX = player.x + player.face.x * CAM.lookAhead;
+    const centerY = player.y + player.face.y * CAM.lookAhead;
+
+    // Convert to top-left target
+    const targetX = clamp(centerX - viewW()/2, 0, Math.max(0, world.w - viewW()));
+    const targetY = clamp(centerY - viewH()/2, 0, Math.max(0, world.h - viewH()));
+
+    const sx = smoothDamp(camera.x, targetX, camera.vx, CAM.smoothTime, CAM.maxSpeed, dt);
+    camera.x = sx.value; camera.vx = sx.velocity;
+    const sy = smoothDamp(camera.y, targetY, camera.vy, CAM.smoothTime, CAM.maxSpeed, dt);
+    camera.y = sy.value; camera.vy = sy.velocity;
+  }
+
+  // ===== COLLISION (walls on ANY layer) =====
+  function moveAndCollide(dx,dy){
+    const r = PLAYER.radius;
+
+    // X axis sweep
+    if(dx!==0){
+      let nx=player.x+dx;
+      if(dx>0){
+        const right=nx+r; const tx=Math.floor(right/TILE);
+        const top=Math.floor((player.y-r)/TILE);
+        const bot=Math.floor((player.y+r-0.001)/TILE);
+        for(let ty=top;ty<=bot;ty++){
+          if(anyWallAtTile(tx,ty)){ nx=tx*TILE - r - 0.001; dx=0; break; }
+        }
+      } else {
+        const left=nx-r; const tx=Math.floor(left/TILE);
+        const top=Math.floor((player.y-r)/TILE);
+        const bot=Math.floor((player.y+r-0.001)/TILE);
+        for(let ty=top;ty<=bot;ty++){
+          if(anyWallAtTile(tx,ty)){ nx=(tx+1)*TILE + r + 0.001; dx=0; break; }
+        }
+      }
+      player.x=nx;
+    }
+
+    // Y axis sweep
+    if(dy!==0){
+      let ny=player.y+dy;
+      if(dy>0){
+        const bottom=ny+r; const ty=Math.floor(bottom/TILE);
+        const left=Math.floor((player.x-r)/TILE);
+        const right=Math.floor((player.x+r-0.001)/TILE);
+        for(let tx=left;tx<=right;tx++){
+          if(anyWallAtTile(tx,ty)){ ny=ty*TILE - r - 0.001; dy=0; break; }
+        }
+      } else {
+        const top=ny-r; const ty=Math.floor(top/TILE);
+        const left=Math.floor((player.x-r)/TILE);
+        const right=Math.floor((player.x+r-0.001)/TILE);
+        for(let tx=left;tx<=right;tx++){
+          if(anyWallAtTile(tx,ty)){ ny=(ty+1)*TILE + r + 0.001; dy=0; break; }
+        }
+      }
+      player.y=ny;
+    }
+
+    // bounds
+    const rr=PLAYER.radius+2;
+    player.x=clamp(player.x, rr, world.w-rr);
+    player.y=clamp(player.y, rr, world.h-rr);
+  }
+
+  // ===== RENDER =====
+  function viewW(){ return (cvs.width/DPR)/VIEW.zoom }
+  function viewH(){ return (cvs.height/DPR)/VIEW.zoom }
+
+  function screenToWorld(sx,sy){
+    const x = camera.x + (sx/DPR)/VIEW.zoom;
+    const y = camera.y + (sy/DPR)/VIEW.zoom;
+    return { x, y, tx:Math.floor(x/TILE), ty:Math.floor(y/TILE) };
+  }
+
+  function drawWorld(){
+    const vW=viewW(), vH=viewH();
+    const startTX=Math.floor(camera.x/TILE), startTY=Math.floor(camera.y/TILE);
+    const endTX=Math.ceil((camera.x+vW)/TILE), endTY=Math.ceil((camera.y+vH)/TILE);
+
+    // draw layers bottom->top
+    for(let l=0;l<LAYERS;l++){
+      if(!layerUI[l].visible) continue;
+      const alpha = (l+1===currentLayer)?1:0.78;
+      ctx.globalAlpha = alpha;
+
+      for(let ty=startTY; ty<endTY; ty++){
+        for(let tx=startTX; tx<endTX; tx++){
+          const code = getTileAt(l,tx,ty);
+          if(code===0) continue;
+          const x=tx*TILE - camera.x, y=ty*TILE - camera.y;
+
+          if(code===1){
+            // FLOOR: checker
+            ctx.fillStyle = ((tx+ty)&1) ? COLORS.floorA : COLORS.floorB;
+            ctx.fillRect(x,y,TILE,TILE);
+          } else if(code===2){
+            // WALL: bold top lip + face + outline + hatch overlay
+            // base
+            ctx.fillStyle = COLORS.wallTop; ctx.fillRect(x,y,TILE,8);
+            ctx.fillStyle = COLORS.wallFace; ctx.fillRect(x,y+8,TILE,TILE-8);
+
+            // strong outline on top edge so it's clearly a wall block
+            ctx.strokeStyle = COLORS.wallOutline; ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.moveTo(x+0.5,y+0.5); ctx.lineTo(x+TILE-0.5,y+0.5); ctx.stroke();
+
+            // bevel edges / drop
+            ctx.fillStyle = COLORS.wallEdge;
+            ctx.fillRect(x + TILE - 4, y + 8, 4, TILE - 8);
+            ctx.fillRect(x, y + TILE - 4, TILE, 4);
+
+            // subtle hatch to scream "WALL"
+            ctx.save();
+            ctx.globalAlpha = 1;
+            drawHatch(x,y+8,TILE,TILE-8);
+            ctx.restore();
+          }
+        }
+      }
+      ctx.globalAlpha=1;
+    }
+
+    // grid
+    if(showGrid){
+      ctx.strokeStyle=COLORS.grid; ctx.lineWidth=1;
+      for(let ty=startTY; ty<=endTY; ty++){
+        const y=ty*TILE - camera.y;
+        ctx.beginPath(); ctx.moveTo(startTX*TILE - camera.x, y); ctx.lineTo(endTX*TILE - camera.x, y); ctx.stroke();
+      }
+      for(let tx=startTX; tx<=endTX; tx++){
+        const x=tx*TILE - camera.x;
+        ctx.beginPath(); ctx.moveTo(x, startTY*TILE - camera.y); ctx.lineTo(x, endTY*TILE - camera.y); ctx.stroke();
+      }
+    }
+
+    // hover highlight in edit mode
+    if(!playtest){
+      const tx = Math.floor(mouse.worldX / TILE), ty = Math.floor(mouse.worldY / TILE);
+      if(inBounds(tx,ty)){
+        const hx=tx*TILE - camera.x, hy=ty*TILE - camera.y;
+        ctx.fillStyle = COLORS.hover; ctx.fillRect(hx,hy,TILE,TILE);
+      }
+    }
+  }
+
+  function drawHatch(x,y,w,h){
+    const step=6;
+    ctx.strokeStyle = COLORS.wallHatch; ctx.lineWidth=1;
+    for(let i=-h; i<w+h; i+=step){
+      ctx.beginPath();
+      ctx.moveTo(x+i, y);
+      ctx.lineTo(x+i-h, y+h);
+      ctx.stroke();
+    }
+  }
+
+  function drawPlayer(){
+    const px=player.x - camera.x, py=player.y - camera.y, r=PLAYER.radius;
+    // body
+    ctx.fillStyle=PLAYER.color; ctx.beginPath(); ctx.arc(px,py,r,0,Math.PI*2); ctx.fill();
+    // direction pointer
+    const ang=Math.atan2(player.face.y,player.face.x);
+    ctx.save(); ctx.translate(px,py); ctx.rotate(ang);
+    ctx.fillStyle="#1d213f"; ctx.beginPath(); ctx.moveTo(r*0.9,0); ctx.lineTo(r*0.2,6); ctx.lineTo(r*0.2,-6); ctx.closePath(); ctx.fill();
+    ctx.restore();
+    // shadow
+    ctx.fillStyle="rgba(0,0,0,0.25)"; ctx.beginPath(); ctx.ellipse(px,py+r*.55,r*.9,r*.45,0,0,Math.PI*2); ctx.fill();
+  }
+
+  // ===== LOOP =====
+  let last=performance.now(), fps=0, acc=0, frames=0;
+  const badge=q("badge");
+  function tick(now){
+    const dt=Math.min(0.033,(now-last)/1000); last=now;
+
+    // fps
+    acc+=dt; frames++;
+    if(acc>=0.5){ fps=Math.round(frames/acc); frames=0; acc=0; badge.textContent=`${fps} fps ${playtest?"• PLAY":"• EDIT"} • zoom ${VIEW.zoom.toFixed(2)}x • L${currentLayer}` }
+
+    // clear
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+    ctx.clearRect(0,0,cvs.width/DPR,cvs.height/DPR);
+
+    // zoom scope
+    ctx.save(); ctx.scale(VIEW.zoom,VIEW.zoom);
+
+    if(playtest){
+      // input
+      const ax = (keys.has("d")||keys.has("arrowright")?1:0) - (keys.has("a")||keys.has("arrowleft")?1:0);
+      const ay = (keys.has("s")||keys.has("arrowdown")?1:0) - (keys.has("w")||keys.has("arrowup")?1:0);
+      let len=Math.hypot(ax,ay); let dx=0,dy=0;
+      if(len){ dx=ax/len; dy=ay/len; player.face={x:dx,y:dy}; }
+      const speed=PLAYER.baseSpeed*(keys.has("shift")?PLAYER.sprintMult:1);
+      moveAndCollide(dx*speed*dt, dy*speed*dt);
+
+      // camera FOLLOW (always updates in play mode)
+      updateCamera(dt);
+    }
+
+    drawWorld();
+    if(playtest) drawPlayer();
+
+    ctx.restore();
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  // ===== AUTOSAVE =====
+  const AUTOKEY="topdown_map_autosave_v2";
+  function saveAutosave(force=false){ try{localStorage.setItem(AUTOKEY,JSON.stringify(map)); if(force) console.log("Autosave loaded")}catch{} }
+  let saveTimer=null; function saveAutosaveDebounced(){ clearTimeout(saveTimer); saveTimer=setTimeout(saveAutosave,400) }
+  try{ const raw=localStorage.getItem(AUTOKEY); if(raw){const obj=JSON.parse(raw); if(obj?.layers?.length===LAYERS){for(let l=0;l<LAYERS;l++) map.layers[l]=obj.layers[l].map(r=>r.map(v=>clampi(v,0,2)))}} }catch{}
+
+  // ===== MISC =====
+  function togglePlay(){
+    playtest=!playtest;
+    if(playtest){
+      // snap camera toward player on enter so follow is obvious
+      camera.x = clamp(player.x - viewW()/2, 0, Math.max(0,world.w - viewW()));
+      camera.y = clamp(player.y - viewH()/2, 0, Math.max(0,world.h - viewH()));
+      camera.vx=camera.vy=0;
+    }
+    q("playBtn").textContent = playtest ? "■ Stop" : "▶ Playtest";
+  }
+  function download(name,text){const blob=new Blob([text],{type:"application/json"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=name;a.click();URL.revokeObjectURL(url)}
+})();
+</script>
+</body>
+</html>
