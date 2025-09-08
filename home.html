@@ -5,39 +5,27 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Tivora — Home</title>
 <style>
-  :root{
-    --bg:#faf7ff; --panel:#fff; --ink:#0b0d18; --muted:#6b7280; --border:#ebe8f2;
-    --accent:#6e4cff; --pill:#f1ecff; --shadow:0 10px 30px rgba(20,20,40,.06); --radius:16px;
-  }
+  :root{--bg:#faf7ff; --panel:#fff; --ink:#0b0d18; --muted:#6b7280; --border:#ebe8f2; --accent:#6e4cff; --pill:#f1ecff; --shadow:0 10px 30px rgba(20,20,40,.06); --radius:16px;}
   *{box-sizing:border-box}
   html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font:600 15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Inter,sans-serif}
   a{color:inherit;text-decoration:none}
-  /* Top bar like Gimkit */
   header{position:sticky;top:0;z-index:10;background:#fffccf00;border-bottom:1px solid var(--border);backdrop-filter:saturate(120%) blur(6px)}
   .nav{max-width:1140px;margin:0 auto;padding:10px 16px;display:flex;align-items:center;gap:14px}
   .brand{display:flex;align-items:center;gap:10px;font-weight:800}
   .logo{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,#7d5cff,#9e94ff)}
-  .tabs{display:flex;gap:8px;margin-left:10px}
   .tab{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;border:1px solid var(--border);background:#fff}
-  .tab.active{background:var(--pill); border-color:#e4dcff; color:#4b36c9}
   .right{margin-left:auto;display:flex;gap:8px}
   .chip{padding:8px 12px;border-radius:999px;border:1px solid var(--border);color:#444;background:#fff}
 
   main{max-width:1140px;margin:22px auto;padding:0 16px}
   h1{font-size:42px;letter-spacing:.2px;margin:18px 0}
-  section.block{
-    background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow);
-    padding:18px; margin:22px 0;
-  }
+  section.block{background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); padding:18px; margin:22px 0;}
   .block h2{margin:0 0 12px;font-size:22px}
   .pillrow{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
   .pill{padding:8px 12px;border-radius:999px;border:1px solid var(--border);background:#fff;color:#333}
   .pill.active{background:var(--pill); border-color:#e4dcff; color:#4b36c9}
   .row{display:flex;gap:10px;flex-wrap:wrap}
-  input[type=text]{
-    flex:1; min-width:260px; padding:12px 14px; border-radius:12px; border:1px solid var(--border);
-    background:#fff; color:var(--ink); font:600 15px/1.1 inherit;
-  }
+  input[type=text]{flex:1; min-width:260px; padding:12px 14px; border-radius:12px; border:1px solid var(--border); background:#fff; color:var(--ink); font:600 15px/1.1 inherit;}
   .btn{padding:12px 14px;border-radius:12px;border:1px solid var(--border);background:#fff;cursor:pointer}
   .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
   .hint{color:var(--muted);font-weight:500}
@@ -54,14 +42,12 @@
 <header>
   <nav class="nav">
     <div class="brand"><div class="logo"></div>Tivora</div>
-    <div class="tabs">
-      <a class="tab active" href="./home.html">Home</a>
-      <a class="tab" href="./home.html#sets">Kits</a>
-      <a class="tab" href="#join">Join Game</a>
-    </div>
+    <a class="tab" href="./index.html">Landing</a>
+    <a class="tab" href="./home.html">Home</a>
+    <a class="tab" href="./host.html">Host</a>
+    <a class="tab" href="./player.html">Join</a>
     <div class="right">
-      <a class="chip" href="./index.html">Discovery</a>
-      <a class="chip" href="./2d.html">Creative</a>
+      <a class="chip" href="./2d.html">Editor</a>
       <a class="chip" href="#mysets">My Sets</a>
     </div>
   </nav>
@@ -80,7 +66,8 @@
     <div class="row">
       <input id="joinCode" type="text" placeholder="Enter 6-character code (e.g., A1B2C3)" maxlength="8" />
       <button class="btn primary" id="joinBtn">Join</button>
-      <span class="hint" id="joinHint">Ask the host for a code. (Demo — no server yet)</span>
+      <a class="btn" href="./host.html">Host a Game</a>
+      <span class="hint" id="joinHint">Ask the host for a code.</span>
     </div>
   </section>
 
@@ -115,14 +102,12 @@
   function removeSet(id){ saveSets(getSets().filter(s=>s.id!==id)) }
   function fmt(t){ return new Date(t).toLocaleString() }
 
-  // ---------- Templates to open via ?template= ----------
   const templates = [
     { key:'meadow', name:'Meadow Run', desc:'Grasslands with a river & sandbanks', tags:['Grass','Water','Sand'] },
     { key:'island', name:'Island Dash', desc:'Small island ringed by water', tags:['Water','Sand'] },
     { key:'arena',  name:'Stone Arena', desc:'Symmetric arena with obstacles', tags:['Stone','Walls'] },
   ];
 
-  // ---------- Renderers ----------
   const $featured = document.getElementById('featured');
   const $my = document.getElementById('mysetsGrid');
 
@@ -174,12 +159,12 @@
     });
   }
 
-  // ---------- Join flow (placeholder) ----------
+  // Join flow -> player.html
   document.getElementById('joinBtn').addEventListener('click', ()=>{
     const code = document.getElementById('joinCode').value.trim().toUpperCase();
     const hint = document.getElementById('joinHint');
     if(!/^[A-Z0-9]{4,8}$/.test(code)){ hint.textContent='Enter a valid code (letters & numbers, 4–8 chars).'; return; }
-    location.href = `./2d.html?room=${encodeURIComponent(code)}`;
+    location.href = `./player.html?code=${encodeURIComponent(code)}`;
   });
 
   document.getElementById('newSetBtn').addEventListener('click', ()=>location.href='./2d.html');
