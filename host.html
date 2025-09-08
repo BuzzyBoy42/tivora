@@ -16,10 +16,12 @@
   h2{margin:0 0 10px;font-size:22px} .row{display:flex;gap:10px;flex-wrap:wrap}
   select,input,button{padding:10px 12px;border-radius:12px;border:1px solid var(--border);background:#fff}
   button.primary{background:var(--accent);color:#fff;border-color:var(--accent);cursor:pointer}
+  button[disabled]{opacity:.5;cursor:not-allowed}
   .bigcode{font-size:42px;letter-spacing:6px;text-align:center;margin:6px 0}
   table{width:100%;border-collapse:collapse} th,td{padding:10px;border-bottom:1px solid var(--border);text-align:left}
   .muted{color:var(--muted)} .qbox{background:#fff;border:1px dashed var(--border);border-radius:12px;padding:12px}
-  .err{background:#fff3f3;border:1px solid #ffcfcf;color:#8b1a1a;padding:10px;border-radius:12px}
+  .err{background:#fff3f3;border:1px solid #ffcfcf;color:#8b1a1a;padding:10px;border-radius:12px;display:none}
+  .ok{color:#22a06b;font-weight:700}
 </style>
 </head>
 <body>
@@ -32,13 +34,14 @@
   </div>
 </header>
 
-<!-- Try to load sets; we'll also have a fallback if it fails -->
+<!-- Load sets; we have a fallback if this file is missing -->
 <script src="./question_sets.js"></script>
 
 <main>
+  <!-- Create -->
   <section class="card" id="creator">
     <h2>Create a Game</h2>
-    <div id="err" class="err" style="display:none"></div>
+    <div id="err" class="err"></div>
     <div class="row">
       <input id="hostName" placeholder="Host name (optional)" />
       <select id="setSel"></select>
@@ -50,45 +53,58 @@
     <div class="muted">Pick a set and gamemode, then create the room. You’ll get a 6-digit code.</div>
   </section>
 
-  <section class="card" id="roomCard" style="display:none">
-    <h2>Room</h2>
+  <!-- Lobby -->
+  <section class="card" id="lobbyCard" style="display:none">
+    <h2>Lobby</h2>
     <div class="bigcode" id="roomCode">— — — — — —</div>
     <div class="row">
       <button id="copyLinkBtn">Copy Player Link</button>
       <span class="muted" id="joinCount">0 player(s) connected</span>
+      <span class="muted">•</span>
+      <span class="ok" id="fbOk" style="display:none">Connected</span>
     </div>
-    <div class="qbox" id="qArea">
-      <div id="qTitle" class="muted">Press “Next Question” when ready.</div>
-      <ol id="qChoices" style="margin:8px 0 0 18px"></ol>
+
+    <div class="qbox">
+      <div class="muted">Players</div>
+      <table>
+        <thead><tr><th>#</th><th>Name</th><th>Score</th></tr></thead>
+        <tbody id="boardBody"></tbody>
+      </table>
     </div>
+
     <div class="row">
-      <button id="nextBtn" class="primary">Next Question</button>
+      <button id="startBtn" class="primary">Start Game</button>
       <button id="endBtn">End Game</button>
     </div>
   </section>
 
-  <section class="card" id="board" style="display:none">
-    <h2>Leaderboard</h2>
-    <table>
-      <thead><tr><th>#</th><th>Name</th><th>Score</th></tr></thead>
-      <tbody id="boardBody"></tbody>
-    </table>
+  <!-- Host control during game -->
+  <section class="card" id="controlCard" style="display:none">
+    <h2>Host Controls</h2>
+    <div class="qbox" id="qArea">
+      <div id="qTitle" class="muted">Press “Next Question”.</div>
+      <ol id="qChoices" style="margin:8px 0 0 18px"></ol>
+    </div>
+    <div class="row">
+      <button id="nextBtn" class="primary" disabled>Next Question</button>
+      <button id="backToLobbyBtn">Back to Lobby</button>
+    </div>
   </section>
 </main>
 
 <script type="module">
-/* Firebase via CDN ESM (works on GitHub Pages) */
+/* Firebase via CDN (works on GitHub Pages) */
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.1/firebase-app.js";
 import {
-  getFirestore, doc, setDoc, onSnapshot, updateDoc,
+  getFirestore, doc, setDoc, onSnapshot, updateDoc, getDoc,
   collection, serverTimestamp, query, orderBy, where, runTransaction
 } from "https://www.gstatic.com/firebasejs/10.13.1/firebase-firestore.js";
 
-/* Your Firebase project config (from your message) */
+/* Your Firebase project config */
 const firebaseConfig = {
   apiKey: "AIzaSyAHEhrgIPv_mwYTABBcqFCn0J9jrZIEx1Q",
   authDomain: "tivora-6f934.firebaseapp.com",
-  databaseURL: "https://tivora-6f934-default-rtdb.firebaseio.com", // unused here
+  databaseURL: "https://tivora-6f934-default-rtdb.firebaseio.com",
   projectId: "tivora-6f934",
   storageBucket: "tivora-6f934.firebasestorage.app",
   messagingSenderId: "329631706099",
@@ -98,133 +114,166 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db  = getFirestore(app);
 
-/* ---------- UI helpers ---------- */
-const $ = sel => document.querySelector(sel);
+/* ---------- Helpers & UI ---------- */
+const $ = s=>document.querySelector(s);
 const errBox = $("#err");
-function showErr(msg){ errBox.style.display=""; errBox.textContent = msg; console.error(msg); }
+const ui = {
+  creator: $("#creator"),
+  lobbyCard: $("#lobbyCard"),
+  controlCard: $("#controlCard"),
+  // creator
+  hostName: $("#hostName"),
+  setSel: $("#setSel"),
+  modeSel: $("#modeSel"),
+  createBtn: $("#createBtn"),
+  // lobby
+  roomCode: $("#roomCode"),
+  copyLinkBtn: $("#copyLinkBtn"),
+  joinCount: $("#joinCount"),
+  boardBody: $("#boardBody"),
+  startBtn: $("#startBtn"),
+  endBtn: $("#endBtn"),
+  fbOk: $("#fbOk"),
+  // control
+  qTitle: $("#qTitle"),
+  qChoices: $("#qChoices"),
+  nextBtn: $("#nextBtn"),
+  backToLobbyBtn: $("#backToLobbyBtn")
+};
+function showErr(msg){ errBox.style.display=""; errBox.textContent=msg; console.error(msg); }
+function hideErr(){ errBox.style.display="none"; errBox.textContent=""; }
 
-/* Sets: use loaded sets if available; otherwise fallback */
 const FALLBACK_SETS = [
   { id:"demo-math", name:"Quick Math", questions:[
     {q:"2 + 2 = ?", choices:["3","4","5"], correct:1},
     {q:"5 × 3 = ?", choices:["8","15","10"], correct:1},
     {q:"9 − 4 = ?", choices:["4","5","6"], correct:1}
-  ]},
-  { id:"demo-sci", name:"Basics of Science", questions:[
-    {q:"H₂O is…", choices:["Oxygen","Water","Hydrogen"], correct:1},
-    {q:"Earth is the ___ planet from the Sun.", choices:["2nd","3rd","4th"], correct:1},
-    {q:"Humans breathe in…", choices:["CO₂","N₂","O₂"], correct:2}
   ]}
 ];
-const SETS = (window.TIVORA_SETS && Array.isArray(window.TIVORA_SETS) && window.TIVORA_SETS.length)
-  ? window.TIVORA_SETS : FALLBACK_SETS;
+const SETS = (Array.isArray(window.TIVORA_SETS) && window.TIVORA_SETS.length) ? window.TIVORA_SETS : FALLBACK_SETS;
+SETS.forEach(s=>{ const o=document.createElement('option'); o.value=s.id; o.textContent=s.name; ui.setSel.appendChild(o); });
+const getSetById = id => SETS.find(s=>s.id===id);
 
-const setSel = $("#setSel");
-SETS.forEach(s=>{ const o=document.createElement('option'); o.value=s.id; o.textContent=s.name; setSel.appendChild(o); });
-function getSetById(id){ return SETS.find(s=>s.id===id); }
+/* ---------- Room state ---------- */
+let roomRef=null, code=null, currentSet=null, round=0, stopPlayers=null, stopRoomSnap=null, stopAnswers=null;
 
-function genCode(len=6){
-  const chars="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let out=""; for(let i=0;i<len;i++) out+=chars[Math.floor(Math.random()*chars.length)];
-  return out;
-}
-
-const ui = {
-  hostName: $("#hostName"),
-  modeSel : $("#modeSel"),
-  createBtn: $("#createBtn"),
-  roomCard : $("#roomCard"),
-  roomCode : $("#roomCode"),
-  copyLinkBtn: $("#copyLinkBtn"),
-  joinCount: $("#joinCount"),
-  nextBtn: $("#nextBtn"),
-  endBtn: $("#endBtn"),
-  board: $("#board"),
-  boardBody: $("#boardBody"),
-  qTitle: $("#qTitle"),
-  qChoices: $("#qChoices")
-};
-
-let roomRef=null, code=null, round=0, currentSet=null, stopPlayers=null, stopAnswers=null, stopRoomSnap=null;
-
-/* Global error catcher -> UI */
-window.addEventListener('error', e=> showErr(`Script error: ${e.message}`));
-window.addEventListener('unhandledrejection', e=> showErr(`Promise error: ${e.reason?.message||e.reason}`));
-
-ui.createBtn.onclick = async () => {
+/* ---------- Create flow ---------- */
+ui.createBtn.onclick = async ()=>{
+  hideErr();
   try{
-    currentSet = getSetById(setSel.value);
-    if(!currentSet){ showErr("No set selected (or sets failed to load)."); return; }
+    currentSet = getSetById(ui.setSel.value);
+    if(!currentSet){ showErr("Pick a set first."); return; }
 
-    code    = genCode(6);
+    code = genCode(6);
     roomRef = doc(db, "rooms", code);
 
     await setDoc(roomRef, {
       mode: ui.modeSel.value,
       setId: currentSet.id,
       hostName: ui.hostName.value || "Host",
-      status: "lobby",
+      status: "lobby",       // <- lobby until you click Start
       round: 0,
       createdAt: serverTimestamp()
     });
 
+    // Immediately reveal lobby UI (code + players)
     ui.roomCode.textContent = code;
-    ui.roomCard.style.display = "";
-    ui.board.style.display = "";
-    $("#creator").scrollIntoView({behavior:'smooth',block:'start'});
+    ui.creator.style.display = "";
+    ui.lobbyCard.style.display = "";
+    ui.controlCard.style.display = ""; // visible, but Next disabled until Start
+    ui.nextBtn.disabled = true;
 
-    // live leaderboard
-    const playersCol = collection(roomRef, "players");
-    const playersQ = query(playersCol, orderBy("score", "desc"));
+    // live players/leaderboard
+    if(stopPlayers) stopPlayers();
+    const playersQ = query(collection(roomRef, "players"), orderBy("score","desc"));
     stopPlayers = onSnapshot(playersQ, snap=>{
-      const rows = [];
+      const rows=[];
       snap.forEach(d=>rows.push({id:d.id, ...d.data()}));
       ui.joinCount.textContent = `${rows.length} player(s) connected`;
-      ui.boardBody.innerHTML = rows
-        .map((r,i)=>`<tr><td>${i+1}</td><td>${(r.name||"Player").replace(/</g,"&lt;")}</td><td>${r.score||0}</td></tr>`)
-        .join("");
-    }, err=> showErr("Live leaderboard error: "+err.message));
+      ui.boardBody.innerHTML = rows.map((r,i)=>`<tr><td>${i+1}</td><td>${escapeHtml(r.name||"Player")}</td><td>${r.score||0}</td></tr>`).join("");
+      ui.fbOk.style.display = ""; // we’re getting snapshots, so connection is OK
+    }, err=> showErr("Players stream error: "+err.message));
 
-    stopRoomSnap = onSnapshot(roomRef, roomSnap=>{
-      const data = roomSnap.data(); if(!data) return;
+    // keep round/status in sync (e.g., if you open another host tab)
+    if(stopRoomSnap) stopRoomSnap();
+    stopRoomSnap = onSnapshot(roomRef, snap=>{
+      const data = snap.data(); if(!data) return;
       round = data.round|0;
-    }, err=> showErr("Room watcher error: "+err.message));
+      if(data.status==="lobby"){
+        ui.nextBtn.disabled = true;
+        ui.qTitle.textContent = "Waiting in lobby. Click Start when ready.";
+        ui.qChoices.innerHTML = "";
+      } else if(data.status==="question" && data.question){
+        ui.nextBtn.disabled = false;
+        ui.qTitle.textContent = `Q${data.question.n}: ${data.question.q}`;
+        ui.qChoices.innerHTML = data.question.choices.map((c,i)=>`<li>${escapeHtml(c)}${i===data.question.answerIndex?" ✓":""}</li>`).join("");
+      } else if(data.status==="started"){
+        // Started but no question yet
+        ui.nextBtn.disabled = false;
+        ui.qTitle.textContent = "Game started. Press Next Question.";
+        ui.qChoices.innerHTML = "";
+      } else if(data.status==="ended"){
+        ui.nextBtn.disabled = true;
+        ui.qTitle.textContent = "Game ended.";
+        ui.qChoices.innerHTML = "";
+      }
+    }, err=> showErr("Room stream error: "+err.message));
 
   }catch(err){
-    // Most common: Firestore not enabled or rules deny write
-    showErr("Create Game failed: " + (err.message || err));
+    showErr("Create Game failed: "+ (err?.message||err));
   }
 };
 
-ui.copyLinkBtn.onclick = async () => {
+/* ---------- Lobby actions ---------- */
+ui.copyLinkBtn.onclick = async ()=>{
   try{
     const url = `${location.origin}${location.pathname.replace("host.html","")}player.html?code=${code||''}`;
     await navigator.clipboard.writeText(url);
-    alert("Copied join link:\n" + url);
-  }catch(err){ showErr("Clipboard error: " + err.message); }
+    alert("Copied join link:\n"+url);
+  }catch(err){ showErr("Clipboard error: "+err.message); }
 };
 
-ui.nextBtn.onclick = async () => {
+ui.startBtn.onclick = async ()=>{
+  try{
+    if(!roomRef) return showErr("No room created yet.");
+    await updateDoc(roomRef, { status: "started", round: 0 });
+    ui.nextBtn.disabled = false; // you can now send first question
+  }catch(err){ showErr("Start Game failed: "+err.message); }
+};
+
+ui.backToLobbyBtn.onclick = async ()=>{
   try{
     if(!roomRef) return;
+    await updateDoc(roomRef, { status:"lobby", round: 0, question: null });
+  }catch(err){ showErr("Back to Lobby failed: "+err.message); }
+};
+
+ui.endBtn.onclick = async ()=>{
+  try{
+    if(!roomRef) return;
+    await updateDoc(roomRef, { status:"ended" });
+    if(stopAnswers) stopAnswers();
+    alert("Game ended.");
+  }catch(err){ showErr("End Game failed: "+err.message); }
+};
+
+/* ---------- Questions ---------- */
+ui.nextBtn.onclick = async ()=>{
+  try{
+    if(!roomRef || !currentSet) return;
     const idx = (round) % currentSet.questions.length;
     const q = currentSet.questions[idx];
     round++;
 
     await updateDoc(roomRef, {
-      round,
       status: "question",
+      round,
       question: { n: round, q: q.q, choices: q.choices, answerIndex: q.correct }
     });
 
-    ui.qTitle.textContent = `Q${round}: ${q.q}`;
-    ui.qChoices.innerHTML = q.choices.map((c,i)=>{
-      const mark = (i===q.correct) ? " ✓" : "";
-      return `<li>${c}${mark}</li>`;
-    }).join("");
-
+    // score answers as they arrive for this round
     if(stopAnswers) stopAnswers();
-    const answersQ = query(collection(roomRef, "answers"), where("round", "==", round));
+    const answersQ = query(collection(roomRef,"answers"), where("round","==", round));
     stopAnswers = onSnapshot(answersQ, (snap)=>{
       snap.docChanges().forEach(ch=>{
         if(ch.type!=="added") return;
@@ -237,28 +286,30 @@ ui.nextBtn.onclick = async () => {
           const data = roomSnap.data(); if(!data || !data.question || data.question.n!==ans.round) return;
 
           const correct = ans.choiceIndex === data.question.answerIndex;
-          const playerRef = doc(roomRef, "players", ans.playerId);
+          const playerRef = doc(roomRef,"players", ans.playerId);
           const playerSnap = await tx.get(playerRef);
           if(!playerSnap.exists()) return;
 
           const cur = playerSnap.data().score||0;
           tx.update(playerRef, { score: cur + (correct?1:0) });
-          tx.update(ansRef, { processed: true, correct });
-        }).catch(err=> showErr("Transaction error: "+err.message));
+          tx.update(ansRef, { processed:true, correct });
+        });
       });
-    }, err=> showErr("Answer stream error: "+err.message));
-
-  }catch(err){ showErr("Next Question failed: " + err.message); }
+    });
+  }catch(err){ showErr("Next Question failed: "+err.message); }
 };
 
-ui.endBtn.onclick = async ()=>{
-  try{
-    if(!roomRef) return;
-    await updateDoc(roomRef, { status:"ended" });
-    if(stopAnswers) stopAnswers();
-    alert("Game ended.");
-  }catch(err){ showErr("End Game failed: " + err.message); }
-};
+/* ---------- Utils ---------- */
+function genCode(len=6){
+  const chars="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let out=""; for(let i=0;i<len;i++) out+=chars[Math.floor(Math.random()*chars.length)];
+  return out;
+}
+function escapeHtml(s){ return String(s).replace(/[&<>"]/g, c=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])) }
+
+/* Surface unexpected errors to the red box */
+addEventListener('error', e=> showErr(`Script error: ${e.message}`));
+addEventListener('unhandledrejection', e=> showErr(`Promise error: ${e.reason?.message||e.reason}`));
 </script>
 </body>
 </html>
