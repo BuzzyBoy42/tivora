@@ -3,17 +3,15 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Top-Down Map Editor — Multi-Tile (Grass/Dirt/Path/Sand/Water + Walls)</title>
+<title>Top-Down Map Editor — Any Block Can Be Solid</title>
 <style>
-  :root {
-    --bg:#0f1020; --ink:#e8e9ff; --muted:#a3a9bd; --panel:rgba(22,24,42,.55); --accent:#7c93ff;
-  }
+  :root { --bg:#0f1020; --ink:#e8e9ff; --muted:#a3a9bd; --panel:rgba(22,24,42,.55); --accent:#7c93ff; }
   *{box-sizing:border-box}
-  html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font:500 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif}
+  html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font:500 14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Inter,sans-serif}
   canvas{display:block;width:100vw;height:100vh;background:#0d0f1d;image-rendering:pixelated;cursor:crosshair}
 
   .ui{
-    position:fixed;inset:12px auto auto 12px;width:360px;max-height:calc(100dvh - 24px);
+    position:fixed;inset:12px auto auto 12px;width:380px;max-height:calc(100dvh - 24px);
     display:grid;gap:10px;padding:12px;border-radius:14px;background:var(--panel);backdrop-filter:blur(10px);
     border:1px solid rgba(124,147,255,.25);box-shadow:0 20px 50px rgba(0,0,0,.35);overflow:auto
   }
@@ -21,7 +19,7 @@
   .sub{color:var(--muted);margin-top:-4px}
   .row{display:grid;gap:8px}
   .cols{grid-template-columns:repeat(3,1fr)}
-  .btn,.chip, .seg button{border:1px solid rgba(255,255,255,.12);background:#11152a;color:var(--ink);padding:8px 10px;border-radius:10px;cursor:pointer}
+  .btn,.chip,.seg button{border:1px solid rgba(255,255,255,.12);background:#11152a;color:var(--ink);padding:8px 10px;border-radius:10px;cursor:pointer}
   .btn:hover,.chip:hover,.seg button:hover{background:#141936}
   .seg{display:flex;gap:6px;flex-wrap:wrap}
   .active{background:#1a2144;border-color:rgba(124,147,255,.45);color:var(--accent)}
@@ -43,7 +41,14 @@
 <div class="ui" id="panel">
   <div>
     <h1>Map Editor — 5 Layers</h1>
-    <div class="sub">Left-click paint • Right-click erase • <span class="kbd">Space</span>+drag pan • <span class="kbd">=</span>/<span class="kbd">-</span>/<span class="kbd">0</span> zoom • <span class="kbd">1–5</span> layer</div>
+    <div class="sub">
+      Left-click paint • Right-click erase • <span class="kbd">Space</span>+drag pan •
+      <span class="kbd">=</span>/<span class="kbd">-</span>/<span class="kbd">0</span> zoom •
+      <span class="kbd">1–5</span> layer
+    </div>
+    <div class="sub">
+      <b>Shift</b> = paint <i>solid</i> only • <b>Ctrl</b> = paint <i>type</i> only • <b>Alt+Click</b> = eyedropper
+    </div>
   </div>
 
   <div class="row">
@@ -55,7 +60,11 @@
 
   <div class="row">
     <div class="legend" id="tilePalette"></div>
-    <div class="hint">Walls are solid (collide) on any layer. Other tiles are walkable.</div>
+    <div class="seg">
+      <button class="btn" id="solidBtn">Solid: Off (C)</button>
+      <button class="btn" id="colliderVisBtn">Show Colliders: On (H)</button>
+    </div>
+    <div class="hint">Any tile can be solid (collidable). "Wall" is just a visual type now.</div>
   </div>
 
   <div class="row">
@@ -76,7 +85,7 @@
       <button class="btn" id="importBtn">Import JSON</button>
       <input class="hidden" type="file" id="fileInput" accept="application/json">
     </div>
-    <div class="hint">Autosaves locally every few seconds.</div>
+    <div class="hint">Autosaves locally every few seconds. Old maps auto-convert (WALL → solid).</div>
   </div>
 
   <div class="row">
@@ -94,34 +103,41 @@
   // ===== CONFIG =====
   const TILE = 48;
   const MAP_W = 60, MAP_H = 34;
-  const LAYERS = 5;              // 1..5 (1 bottom)
+  const LAYERS = 5;                      // 1..5 (1 bottom)
   const VIEW = { zoom: 1.8, min: 0.9, max: 3.5, step: 0.1, def: 1.8 };
   const PLAYER = { radius: 14, baseSpeed: 170, sprintMult: 1.45, color: "#ffd86b" };
 
-  // Tile type codes (keep WALL=2 to preserve collision logic)
+  // Visual tile types (collision is separate!)
   const TILES = {
     EMPTY: 0,
     GRASS: 1,
-    WALL:  2, // collides
+    WALL:  2, // still a visual variant; no inherent collision
     DIRT:  3,
     PATH:  4,
     SAND:  5,
-    WATER: 6
+    WATER: 6,
+    STONE: 7
   };
 
-  // Palette ordering for UI
+  // Palette entries
   const TILE_PALETTE = [
     { key: "GRASS", label: "Grass",  color: "#2f7d3b" },
     { key: "DIRT",  label: "Dirt",   color: "#6b4a2b" },
     { key: "PATH",  label: "Path",   color: "#b99a66" },
     { key: "SAND",  label: "Sand",   color: "#d8c27a" },
     { key: "WATER", label: "Water",  color: "#2d6bba" },
-    { key: "WALL",  label: "Wall (solid)", color: "#3b4274" }
+    { key: "STONE", label: "Stone",  color: "#7a808c" },
+    { key: "WALL",  label: "Wall (visual)", color: "#3b4274" }
   ];
 
   const COLORS = {
-    grid:"rgba(255,255,255,0.06)", hover:"rgba(124,147,255,0.28)",
+    grid:"rgba(255,255,255,0.06)",
+    hover:"rgba(124,147,255,0.22)",
+    // wall face (visual)
     wallTop:"#4a579a", wallFace:"#2a2f55", wallOutline:"#a9b1ff", wallEdge:"rgba(0,0,0,0.40)",
+    // collider overlay
+    solidStroke:"rgba(255,119,119,0.9)",
+    solidFill:"rgba(255,80,80,0.12)"
   };
 
   // ===== STATE =====
@@ -131,20 +147,25 @@
   function resize(){DPR=Math.max(1,Math.min(2,window.devicePixelRatio||1));cvs.width=Math.floor(innerWidth*DPR);cvs.height=Math.floor(innerHeight*DPR);ctx.setTransform(DPR,0,0,DPR,0,0)}
   addEventListener("resize", resize, {passive:true}); resize();
 
-  // Map: layers[l][y][x] -> tile code
-  const map = { layers: Array.from({length:LAYERS},()=>make2D(MAP_W,MAP_H,TILES.EMPTY)), meta:{w:MAP_W,h:MAP_H,tile:TILE,tiles:TILES,version:3} };
+  // Map data structure: layers[l][y][x] -> { t: <tileType>, s: 0|1 }  (type + solid)
+  const makeTile = (t=TILES.EMPTY,s=0)=>({t,s});
+  const make2D = (w,h,cellFn)=>Array.from({length:h},(_,y)=>Array.from({length:w},(_,x)=>cellFn(x,y)));
+  const map = {
+    layers: Array.from({length:LAYERS},()=>make2D(MAP_W,MAP_H,()=>makeTile())),
+    meta: { w:MAP_W, h:MAP_H, tile:TILE, tiles:TILES, version:4 } // <-- new version
+  };
   const world = { w: MAP_W * TILE, h: MAP_H * TILE };
 
   const camera = { x:0, y:0, vx:0, vy:0 };
   const CAM = { smoothTime:0.14, maxSpeed:6000, lookAhead:38 };
 
   const player = { x:TILE*3, y:TILE*3, face:{x:1,y:0} };
-  let playtest=false, showGrid=true, currentLayer=1, tool="paint", tileKey="GRASS";
+  let playtest=false, showGrid=true, showSolidOverlay=true, currentLayer=1, tool="paint", tileKey="GRASS", brushSolid=false;
 
   const keys = new Set();
   const mouse = { down:false, button:0, panning:false, panStart:{x:0,y:0}, camStart:{x:0,y:0}, worldX:0, worldY:0, tx:-1, ty:-1 };
 
-  // ===== PATTERN CACHE FOR TILES =====
+  // ===== PATTERN CACHE =====
   const patterns = {};
   function makePattern(w, h, drawFn) {
     const c = document.createElement("canvas");
@@ -154,39 +175,33 @@
     return k.createPattern(c, "repeat");
   }
   function initPatterns() {
-    // GRASS: two greens + blades
+    // GRASS
     patterns.GRASS = makePattern(16,16,(k,w,h)=>{
       k.fillStyle = "#244e2c"; k.fillRect(0,0,w,h);
       k.fillStyle = "#2e6a37"; for(let y=0;y<h;y+=8){for(let x=0;x<w;x+=8){k.fillRect(x,y,8,8);}}
       k.strokeStyle = "rgba(255,255,255,0.06)"; k.lineWidth=1;
       for(let i=0;i<6;i++){ const x=Math.random()*w; const y=Math.random()*h; k.beginPath(); k.moveTo(x,y); k.lineTo(x+1,y-2); k.stroke(); }
     });
-
-    // DIRT: brown with pebbles
+    // DIRT
     patterns.DIRT = makePattern(16,16,(k,w,h)=>{
       k.fillStyle = "#5f3f27"; k.fillRect(0,0,w,h);
       k.fillStyle = "#6b4a2b";
       for(let i=0;i<18;i++){ k.globalAlpha = 0.15 + Math.random()*0.25; k.beginPath(); k.arc(Math.random()*w, Math.random()*h, Math.random()*1.5+0.5, 0, Math.PI*2); k.fill(); }
       k.globalAlpha = 1;
     });
-
-    // PATH: tan with diagonal strokes
+    // PATH
     patterns.PATH = makePattern(16,16,(k,w,h)=>{
       k.fillStyle = "#b99a66"; k.fillRect(0,0,w,h);
-      k.strokeStyle = "rgba(0,0,0,0.08)"; k.lineWidth=1;
+      k.strokeStyle = "rgba(0,0,0,0.10)"; k.lineWidth=1;
       for(let i=-h;i<w+h;i+=5){ k.beginPath(); k.moveTo(i,0); k.lineTo(i-h,h); k.stroke(); }
     });
-
-    // SAND: yellow with speckles
+    // SAND
     patterns.SAND = makePattern(16,16,(k,w,h)=>{
       k.fillStyle = "#d8c27a"; k.fillRect(0,0,w,h);
-      k.fillStyle = "rgba(0,0,0,0.10)";
-      for(let i=0;i<20;i++){ k.fillRect(Math.random()*w, Math.random()*h, 1, 1); }
-      k.fillStyle = "rgba(255,255,255,0.12)";
-      for(let i=0;i<12;i++){ k.fillRect(Math.random()*w, Math.random()*h, 1, 1); }
+      k.fillStyle = "rgba(0,0,0,0.10)"; for(let i=0;i<20;i++){ k.fillRect(Math.random()*w, Math.random()*h, 1, 1); }
+      k.fillStyle = "rgba(255,255,255,0.12)"; for(let i=0;i<12;i++){ k.fillRect(Math.random()*w, Math.random()*h, 1, 1); }
     });
-
-    // WATER: deep blue with gentle ripples
+    // WATER
     patterns.WATER = makePattern(32,32,(k,w,h)=>{
       const grad = k.createLinearGradient(0,0,0,h);
       grad.addColorStop(0,"#1f4b85"); grad.addColorStop(1,"#15365f");
@@ -194,10 +209,20 @@
       k.strokeStyle = "rgba(255,255,255,0.15)"; k.lineWidth=1;
       for(let y=4; y<h; y+=8){ k.beginPath(); for(let x=0; x<=w; x+=4){ k.lineTo(x, y + Math.sin((x+y)*0.25)*1.2); } k.stroke(); }
     });
+    // STONE
+    patterns.STONE = makePattern(16,16,(k,w,h)=>{
+      const g = k.createLinearGradient(0,0,0,h); g.addColorStop(0,"#757b86"); g.addColorStop(1,"#666c77");
+      k.fillStyle=g; k.fillRect(0,0,w,h);
+      k.strokeStyle="rgba(0,0,0,0.22)"; k.lineWidth=1; k.beginPath();
+      k.moveTo(0,0);k.lineTo(w,0);k.moveTo(0,h);k.lineTo(w,h);k.moveTo(0,0);k.lineTo(0,h);k.moveTo(w,0);k.lineTo(w,h);
+      k.stroke();
+      k.fillStyle="rgba(255,255,255,0.08)"; k.fillRect(4,8,1,1);
+      k.fillStyle="rgba(0,0,0,0.15)"; k.fillRect(12,6,1,1);
+    });
   }
   initPatterns();
 
-  // ===== UI WIRING =====
+  // ===== UI =====
   const q = (id)=>document.getElementById(id);
 
   // Tools
@@ -221,6 +246,15 @@
   }
   renderPalette();
 
+  // Solid brush toggle + overlay toggle
+  const solidBtn = q("solidBtn");
+  const colliderVisBtn = q("colliderVisBtn");
+  function refreshSolidBtn(){ solidBtn.textContent = `Solid: ${brushSolid ? "On" : "Off"} (C)`; solidBtn.classList.toggle("active", brushSolid); }
+  function refreshColliderVisBtn(){ colliderVisBtn.textContent = `Show Colliders: ${showSolidOverlay ? "On" : "Off"} (H)`; colliderVisBtn.classList.toggle("active", showSolidOverlay); }
+  solidBtn.onclick = ()=>{ brushSolid=!brushSolid; refreshSolidBtn(); };
+  colliderVisBtn.onclick = ()=>{ showSolidOverlay=!showSolidOverlay; refreshColliderVisBtn(); };
+  refreshSolidBtn(); refreshColliderVisBtn();
+
   // Layers list
   const layerBtns = q("layerBtns"), layerUI=[];
   for (let i=1;i<=LAYERS;i++){
@@ -235,13 +269,43 @@
   setLayer(1);
 
   // Buttons
-  q("clearLayerBtn").onclick=()=>{map.layers[currentLayer-1]=make2D(MAP_W,MAP_H,TILES.EMPTY);saveAutosave()};
-  q("clearAllBtn").onclick=()=>{for(let i=0;i<LAYERS;i++)map.layers[i]=make2D(MAP_W,MAP_H,TILES.EMPTY);saveAutosave()};
+  q("clearLayerBtn").onclick=()=>{map.layers[currentLayer-1]=make2D(MAP_W,MAP_H,()=>makeTile());saveAutosave()};
+  q("clearAllBtn").onclick=()=>{for(let i=0;i<LAYERS;i++)map.layers[i]=make2D(MAP_W,MAP_H,()=>makeTile());saveAutosave()};
   q("toggleGridBtn").onclick=()=>{showGrid=!showGrid};
   q("exportBtn").onclick=()=>download("map.json", JSON.stringify(map));
   q("copyBtn").onclick=async()=>{try{await navigator.clipboard.writeText(JSON.stringify(map));alert("Copied JSON")}catch{alert("Clipboard blocked; use Export JSON")}};
   q("importBtn").onclick=()=>q("fileInput").click();
-  q("fileInput").addEventListener("change",async(e)=>{const f=e.target.files[0];if(!f)return;try{const t=await f.text();const o=JSON.parse(t);if(!o.layers||!o.meta)throw new Error("Invalid");if(o.meta.w!==MAP_W||o.meta.h!==MAP_H||o.meta.tile!==TILE)throw new Error("Size mismatch");const valid=setOf(Object.values(TILES));for(let l=0;l<LAYERS;l++)map.layers[l]=o.layers[l].map(r=>r.map(v=>valid.has(v)?v:TILES.EMPTY));saveAutosave(true)}catch(err){alert("Import failed: "+err.message)}finally{e.target.value=""}});
+  q("fileInput").addEventListener("change",async(e)=>{const f=e.target.files[0];if(!f)return;try{
+      const t=await f.text();const o=JSON.parse(t);
+      if(!o.layers||!o.meta) throw new Error("Invalid file");
+      if(o.meta.w!==MAP_W||o.meta.h!==MAP_H||o.meta.tile!==TILE) throw new Error("Size mismatch");
+      // v4 format: objects {t,s}
+      if(o.meta.version>=4){
+        for(let l=0;l<LAYERS;l++){
+          map.layers[l]=o.layers[l].map(row=>row.map(cell=>{
+            if (typeof cell==="object" && cell!==null && "t" in cell && "s" in cell) {
+              return makeTile(validType(cell.t), cell.s?1:0);
+            } else { return makeTile(); }
+          }));
+        }
+      } else {
+        // v2/v3 legacy: ints; WALL (2) meant solid
+        const oldTiles = o.meta.tiles || TILES;
+        const WALL_CODE = oldTiles.WALL ?? 2;
+        for(let l=0;l<LAYERS;l++){
+          map.layers[l]=o.layers[l].map(row=>row.map(v=>{
+            const tcode = Number(v)|0;
+            if (!Number.isFinite(tcode)) return makeTile();
+            const isWall = (tcode===WALL_CODE);
+            // keep same visual type if possible
+            const mappedType = Object.values(TILES).includes(tcode) ? tcode : TILES.GRASS;
+            return makeTile(mappedType, isWall?1:0);
+          }));
+        }
+      }
+      saveAutosave(true);
+    }catch(err){alert("Import failed: "+err.message)}finally{e.target.value=""}});
+
   q("playBtn").onclick=()=>togglePlay();
 
   // ===== INPUT =====
@@ -253,6 +317,8 @@
     if(k>="1"&&k<="5") setLayer(Number(k));
     if(k==="g") showGrid=!showGrid;
     if(k==="p") togglePlay();
+    if(k==="c"){ brushSolid=!brushSolid; refreshSolidBtn(); }
+    if(k==="h"){ showSolidOverlay=!showSolidOverlay; refreshColliderVisBtn(); }
 
     // zoom
     if(e.key==="="||e.key==="+") VIEW.zoom=clamp(VIEW.zoom+VIEW.step,VIEW.min,VIEW.max);
@@ -267,11 +333,18 @@
     const pos=screenToWorld(e.offsetX,e.offsetY);
     mouse.down=true;mouse.button=e.button;mouse.tx=-1;mouse.ty=-1;
 
+    // eyedropper
+    if (e.altKey){
+      const cell = getCell(currentLayer-1, pos.tx, pos.ty);
+      if (cell){ tileKey = keyByType(cell.t) || tileKey; brushSolid = !!cell.s; renderPalette(); refreshSolidBtn(); }
+      return;
+    }
+
     // pan if middle or space+left
     if(e.button===1 || (e.button===0 && keys.has(" "))){
       mouse.panning=true;mouse.panStart={x:e.clientX,y:e.clientY};mouse.camStart={x:camera.x,y:camera.y};return;
     }
-    handlePaint(pos.tx,pos.ty,e.button);
+    handlePaint(pos.tx,pos.ty,e);
   });
   cvs.addEventListener("mousemove",(e)=>{
     const pos=screenToWorld(e.offsetX,e.offsetY);
@@ -286,32 +359,48 @@
     }
 
     if(mouse.down && mouse.button!==1 && !(mouse.button===0 && keys.has(" "))){
-      handlePaint(pos.tx,pos.ty,mouse.button);
+      handlePaint(pos.tx,pos.ty,e);
     }
   });
   addEventListener("mouseup",()=>{mouse.down=false;mouse.panning=false});
 
-  // ===== MAP HELPERS =====
-  function make2D(w,h,val){return Array.from({length:h},()=>Array.from({length:w},()=>val))}
+  // ===== HELPERS =====
   function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
   function inBounds(tx,ty){return tx>=0&&ty>=0&&tx<MAP_W&&ty<MAP_H}
-  function setTileAt(l,tx,ty,code){ if(inBounds(tx,ty)) map.layers[l][ty][tx]=code }
-  function getTileAt(l,tx,ty){ return inBounds(tx,ty)?map.layers[l][ty][tx]:TILES.EMPTY }
-  function anyWallAtTile(tx,ty){ if(!inBounds(tx,ty)) return false; for(let l=0;l<LAYERS;l++){ if(map.layers[l][ty][tx]===TILES.WALL) return true } return false }
-  function setOf(arr){ const s=new Set(); arr.forEach(v=>s.add(v)); return s; }
+  function setCell(layer,tx,ty,cell){ if(inBounds(tx,ty)) map.layers[layer][ty][tx] = cell }
+  function getCell(layer,tx,ty){ return inBounds(tx,ty) ? map.layers[layer][ty][tx] : null }
+  function anySolidAt(tx,ty){ if(!inBounds(tx,ty)) return false; for(let l=0;l<LAYERS;l++){ if(map.layers[l][ty][tx].s) return true } return false }
+  function validType(t){ return Object.values(TILES).includes(t) ? t : TILES.GRASS }
+  function keyByType(t){ for(const [k,v] of Object.entries(TILES)){ if(v===t) return k } return null }
 
-  function handlePaint(tx,ty,button){
+  function handlePaint(tx,ty,e){
     if(!inBounds(tx,ty)) return;
-    if(mouse.tx===tx && mouse.ty===ty) return;
+    if(mouse.tx===tx && mouse.ty===ty && e.type==="mousemove") return; // skip repeats while dragging
     mouse.tx=tx; mouse.ty=ty;
 
-    if(button===2 || tool==="erase"){ setTileAt(currentLayer-1,tx,ty,TILES.EMPTY); saveAutosaveDebounced(); return; }
-    const code = TILES[tileKey];
-    setTileAt(currentLayer-1,tx,ty,code);
+    // erase
+    if(e.button===2 || tool==="erase"){ setCell(currentLayer-1,tx,ty,makeTile()); saveAutosaveDebounced(); return; }
+
+    // modifiers
+    const onlySolid = e.shiftKey;
+    const onlyType  = e.ctrlKey || e.metaKey;
+
+    const cell = getCell(currentLayer-1,tx,ty);
+    const newType = TILES[tileKey];
+    const newSolid = brushSolid ? 1 : 0;
+
+    let t = cell ? cell.t : TILES.EMPTY;
+    let s = cell ? (cell.s?1:0) : 0;
+
+    if (onlySolid) { s = newSolid; }
+    else if (onlyType) { t = newType; }
+    else { t = newType; s = newSolid; }
+
+    setCell(currentLayer-1,tx,ty, makeTile(validType(t), s));
     saveAutosaveDebounced();
   }
 
-  // ===== CAMERA (true follow) =====
+  // ===== CAMERA =====
   function smoothDamp(current,target,velocity,smoothTime,maxSpeed,dt){
     smoothTime=Math.max(0.0001,smoothTime);
     const omega=2/smoothTime, x=omega*dt, exp=1/(1+x+0.48*x*x+0.235*x*x*x);
@@ -326,7 +415,6 @@
     if((originalTo-current)*(newVal-originalTo)>0){newVal=originalTo;newVel=0}
     return {value:newVal, velocity:newVel};
   }
-
   function updateCamera(dt){
     const centerX = player.x + player.face.x * CAM.lookAhead;
     const centerY = player.y + player.face.y * CAM.lookAhead;
@@ -338,10 +426,9 @@
     camera.y = sy.value; camera.vy = sy.velocity;
   }
 
-  // ===== COLLISION (walls on ANY layer) =====
+  // ===== COLLISION (uses per-tile .s) =====
   function moveAndCollide(dx,dy){
     const r = PLAYER.radius;
-
     // X
     if(dx!==0){
       let nx=player.x+dx;
@@ -350,19 +437,18 @@
         const top=Math.floor((player.y-r)/TILE);
         const bot=Math.floor((player.y+r-0.001)/TILE);
         for(let ty=top;ty<=bot;ty++){
-          if(anyWallAtTile(tx,ty)){ nx=tx*TILE - r - 0.001; dx=0; break; }
+          if(anySolidAt(tx,ty)){ nx=tx*TILE - r - 0.001; dx=0; break; }
         }
       } else {
         const left=nx-r; const tx=Math.floor(left/TILE);
         const top=Math.floor((player.y-r)/TILE);
         const bot=Math.floor((player.y+r-0.001)/TILE);
         for(let ty=top;ty<=bot;ty++){
-          if(anyWallAtTile(tx,ty)){ nx=(tx+1)*TILE + r + 0.001; dx=0; break; }
+          if(anySolidAt(tx,ty)){ nx=(tx+1)*TILE + r + 0.001; dx=0; break; }
         }
       }
       player.x=nx;
     }
-
     // Y
     if(dy!==0){
       let ny=player.y+dy;
@@ -371,19 +457,18 @@
         const left=Math.floor((player.x-r)/TILE);
         const right=Math.floor((player.x+r-0.001)/TILE);
         for(let tx=left;tx<=right;tx++){
-          if(anyWallAtTile(tx,ty)){ ny=ty*TILE - r - 0.001; dy=0; break; }
+          if(anySolidAt(tx,ty)){ ny=ty*TILE - r - 0.001; dy=0; break; }
         }
       } else {
         const top=ny-r; const ty=Math.floor(top/TILE);
         const left=Math.floor((player.x-r)/TILE);
         const right=Math.floor((player.x+r-0.001)/TILE);
         for(let tx=left;tx<=right;tx++){
-          if(anyWallAtTile(tx,ty)){ ny=(ty+1)*TILE + r + 0.001; dy=0; break; }
+          if(anySolidAt(tx,ty)){ ny=(ty+1)*TILE + r + 0.001; dy=0; break; }
         }
       }
       player.y=ny;
     }
-
     // bounds
     const rr=PLAYER.radius+2;
     player.x=clamp(player.x, rr, world.w-rr);
@@ -400,25 +485,16 @@
     return { x, y, tx:Math.floor(x/TILE), ty:Math.floor(y/TILE) };
   }
 
-  function drawTile(code, x, y, tx, ty){
-    switch(code){
-      case TILES.GRASS:
-        ctx.fillStyle = patterns.GRASS; ctx.fillRect(x,y,TILE,TILE);
-        break;
-      case TILES.DIRT:
-        ctx.fillStyle = patterns.DIRT; ctx.fillRect(x,y,TILE,TILE);
-        break;
-      case TILES.PATH:
-        ctx.fillStyle = patterns.PATH; ctx.fillRect(x,y,TILE,TILE);
-        break;
-      case TILES.SAND:
-        ctx.fillStyle = patterns.SAND; ctx.fillRect(x,y,TILE,TILE);
-        break;
-      case TILES.WATER:
-        ctx.fillStyle = patterns.WATER; ctx.fillRect(x,y,TILE,TILE);
-        break;
+  function drawTileType(t, x, y){
+    switch(t){
+      case TILES.GRASS: ctx.fillStyle = patterns.GRASS; ctx.fillRect(x,y,TILE,TILE); break;
+      case TILES.DIRT:  ctx.fillStyle = patterns.DIRT;  ctx.fillRect(x,y,TILE,TILE); break;
+      case TILES.PATH:  ctx.fillStyle = patterns.PATH;  ctx.fillRect(x,y,TILE,TILE); break;
+      case TILES.SAND:  ctx.fillStyle = patterns.SAND;  ctx.fillRect(x,y,TILE,TILE); break;
+      case TILES.WATER: ctx.fillStyle = patterns.WATER; ctx.fillRect(x,y,TILE,TILE); break;
+      case TILES.STONE: ctx.fillStyle = patterns.STONE; ctx.fillRect(x,y,TILE,TILE); break;
       case TILES.WALL:
-        // Base block (same style as earlier, with strong outline)
+        // visual "blocky" wall look (no inherent collision)
         ctx.fillStyle = COLORS.wallTop;  ctx.fillRect(x,y,TILE,8);
         ctx.fillStyle = COLORS.wallFace; ctx.fillRect(x,y+8,TILE,TILE-8);
         ctx.strokeStyle = COLORS.wallOutline; ctx.lineWidth = 2;
@@ -430,6 +506,14 @@
     }
   }
 
+  function drawSolidOverlay(x,y){
+    // subtle fill + cross
+    ctx.fillStyle = COLORS.solidFill; ctx.fillRect(x,y,TILE,TILE);
+    ctx.strokeStyle = COLORS.solidStroke; ctx.lineWidth = 1.25;
+    ctx.beginPath(); ctx.moveTo(x+4,y+4); ctx.lineTo(x+TILE-4,y+TILE-4);
+    ctx.moveTo(x+TILE-4,y+4); ctx.lineTo(x+4,y+TILE-4); ctx.stroke();
+  }
+
   function drawWorld(){
     const vW=viewW(), vH=viewH();
     const startTX=Math.floor(camera.x/TILE), startTY=Math.floor(camera.y/TILE);
@@ -438,15 +522,16 @@
     // layers bottom->top
     for(let l=0;l<LAYERS;l++){
       if(!layerUI[l].visible) continue;
-      const alpha = (l+1===currentLayer)?1:0.78;
+      const alpha = (l+1===currentLayer)?1:0.8;
       ctx.globalAlpha = alpha;
 
       for(let ty=startTY; ty<endTY; ty++){
         for(let tx=startTX; tx<endTX; tx++){
-          const code = getTileAt(l,tx,ty);
-          if(code===TILES.EMPTY) continue;
+          const cell = getCell(l,tx,ty);
+          if(!cell || cell.t===TILES.EMPTY) continue;
           const x=tx*TILE - camera.x, y=ty*TILE - camera.y;
-          drawTile(code,x,y,tx,ty);
+          drawTileType(cell.t, x, y);
+          if (showSolidOverlay && cell.s) drawSolidOverlay(x,y);
         }
       }
       ctx.globalAlpha=1;
@@ -470,7 +555,7 @@
       const tx = Math.floor(mouse.worldX / TILE), ty = Math.floor(mouse.worldY / TILE);
       if(inBounds(tx,ty)){
         const hx=tx*TILE - camera.x, hy=ty*TILE - camera.y;
-        ctx.fillStyle = "rgba(124,147,255,0.22)"; ctx.fillRect(hx,hy,TILE,TILE);
+        ctx.fillStyle = COLORS.hover; ctx.fillRect(hx,hy,TILE,TILE);
       }
     }
   }
@@ -493,7 +578,7 @@
 
     // fps
     acc+=dt; frames++;
-    if(acc>=0.5){ fps=Math.round(frames/acc); frames=0; acc=0; badge.textContent=`${fps} fps ${playtest?"• PLAY":"• EDIT"} • zoom ${VIEW.zoom.toFixed(2)}x • L${currentLayer}` }
+    if(acc>=0.5){ fps=Math.round(frames/acc); frames=0; acc=0; badge.textContent=`${fps} fps ${playtest?"• PLAY":"• EDIT"} • zoom ${VIEW.zoom.toFixed(2)}x • L${currentLayer} • Solid:${brushSolid?"On":"Off"}` }
 
     // clear
     ctx.setTransform(DPR,0,0,DPR,0,0);
@@ -521,10 +606,18 @@
   requestAnimationFrame(tick);
 
   // ===== AUTOSAVE =====
-  const AUTOKEY="topdown_map_autosave_v3";
+  const AUTOKEY="topdown_map_autosave_v4";
   function saveAutosave(force=false){ try{localStorage.setItem(AUTOKEY,JSON.stringify(map)); if(force) console.log("Autosave loaded")}catch{} }
   let saveTimer=null; function saveAutosaveDebounced(){ clearTimeout(saveTimer); saveTimer=setTimeout(saveAutosave,400) }
-  try{ const raw=localStorage.getItem(AUTOKEY); if(raw){const obj=JSON.parse(raw); if(obj?.layers?.length===LAYERS){const valid=setOf(Object.values(TILES)); for(let l=0;l<LAYERS;l++) map.layers[l]=obj.layers[l].map(r=>r.map(v=>valid.has(v)?v:TILES.EMPTY))}} }catch{}
+  try{
+    const raw=localStorage.getItem(AUTOKEY);
+    if(raw){
+      const obj=JSON.parse(raw);
+      if(obj?.layers?.length===LAYERS && obj.meta?.version>=4){
+        for(let l=0;l<LAYERS;l++) map.layers[l]=obj.layers[l].map(row=>row.map(c=>makeTile(validType(c.t), c.s?1:0)));
+      }
+    }
+  }catch{}
 
   // ===== MISC =====
   function togglePlay(){
@@ -536,6 +629,8 @@
     }
     q("playBtn").textContent = playtest ? "■ Stop" : "▶ Playtest";
   }
+  function viewW(){ return (cvs.width/DPR)/VIEW.zoom }
+  function viewH(){ return (cvs.height/DPR)/VIEW.zoom }
   function download(name,text){const blob=new Blob([text],{type:"application/json"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=name;a.click();URL.revokeObjectURL(url)}
 })();
 </script>
