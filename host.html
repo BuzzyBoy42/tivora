@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Tivora — Host</title>
+<style>
+  :root{--bg:#faf7ff;--panel:#fff;--ink:#0b0d18;--muted:#6b7280;--border:#ebe8f2;--accent:#6e4cff;--radius:16px;--shadow:0 10px 30px rgba(20,20,40,.06)}
+  *{box-sizing:border-box} html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);font:600 15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Inter,sans-serif}
+  header{position:sticky;top:0;background:#fff;border-bottom:1px solid var(--border)}
+  .nav{max-width:1100px;margin:0 auto;padding:10px 16px;display:flex;gap:10px;align-items:center}
+  .logo{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,#7d5cff,#9e94ff)}
+  .brand{display:flex;gap:10px;align-items:center;font-weight:800}
+  main{max-width:1100px;margin:22px auto;padding:0 16px;display:grid;gap:16px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px}
+  h2{margin:0 0 10px;font-size:22px} .row{display:flex;gap:10px;flex-wrap:wrap}
+  select,input,button{padding:10px 12px;border-radius:12px;border:1px solid var(--border);background:#fff}
+  button.primary{background:var(--accent);color:#fff;border-color:var(--accent);cursor:pointer}
+  .bigcode{font-size:42px;letter-spacing:6px;text-align:center;margin:6px 0}
+  table{width:100%;border-collapse:collapse} th,td{padding:10px;border-bottom:1px solid var(--border);text-align:left}
+  .muted{color:var(--muted)} .qbox{background:#fff;border:1px dashed var(--border);border-radius:12px;padding:12px}
+</style>
+</head>
+<body>
+<header>
+  <div class="nav">
+    <div class="brand"><div class="logo"></div>Tivora — Host</div>
+    <a href="./index.html">Landing</a>
+    <a href="./home.html">Home</a>
+    <a href="./player.html">Player Page</a>
+  </div>
+</header>
+
+<script src="./question_sets.js"></script>
+
+<main>
+  <section class="card" id="creator">
+    <h2>Create a Game</h2>
+    <div class="row">
+      <input id="hostName" placeholder="Host name (optional)" />
+      <select id="setSel"></select>
+      <select id="modeSel">
+        <option value="basic">Basic (Points on correct)</option>
+      </select>
+      <button class="primary" id="createBtn">Create Game</button>
+    </div>
+    <div class="muted">Pick a set and gamemode, then create the room. You’ll get a 6-digit code.</div>
+  </section>
+
+  <section class="card" id="roomCard" style="display:none">
+    <h2>Room</h2>
+    <div class="bigcode" id="roomCode">— — — — — —</div>
+    <div class="row">
+      <button id="copyLinkBtn">Copy Player Link</button>
+      <span class="muted" id="joinCount">0 player(s) connected</span>
+    </div>
+    <div class="qbox" id="qArea">
+      <div id="qTitle" class="muted">Press “Next Question” when ready.</div>
+      <ol id="qChoices" style="margin:8px 0 0 18px"></ol>
+    </div>
+    <div class="row">
+      <button id="nextBtn" class="primary">Next Question</button>
+      <button id="endBtn">End Game</button>
+    </div>
+  </section>
+
+  <section class="card" id="board" style="display:none">
+    <h2>Leaderboard</h2>
+    <table>
+      <thead><tr><th>#</th><th>Name</th><th>Score</th></tr></thead>
+      <tbody id="boardBody"></tbody>
+    </table>
+  </section>
+</main>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.1/firebase-app.js";
+import {
+  getFirestore, doc, setDoc, onSnapshot, updateDoc,
+  collection, serverTimestamp, query, orderBy, where, runTransaction
+} from "https://www.gstatic.com/firebasejs/10.13.1/firebase-firestore.js";
+
+/* TODO: Replace with your Firebase project values */
+const firebaseConfig = {
+  apiKey: "PASTE",
+  authDomain: "PASTE.firebaseapp.com",
+  projectId: "PASTE",
+  storageBucket: "PASTE.appspot.com",
+  messagingSenderId: "PASTE",
+  appId: "PASTE"
+};
+const app = initializeApp(firebaseConfig);
+const db  = getFirestore(app);
+
+const $ = sel => document.querySelector(sel);
+const setSel = $("#setSel");
+(TIVORA_SETS||[]).forEach(s=>{
+  const o=document.createElement('option'); o.value=s.id; o.textContent=s.name; setSel.appendChild(o);
+});
+function genCode(len=6){
+  const chars="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let out=""; for(let i=0;i<len;i++) out+=chars[Math.floor(Math.random()*chars.length)];
+  return out;
+}
+function getSetById(id){ return (TIVORA_SETS||[]).find(s=>s.id===id); }
+
+const ui = {
+  hostName: $("#hostName"),
+  modeSel : $("#modeSel"),
+  createBtn: $("#createBtn"),
+  roomCard : $("#roomCard"),
+  roomCode : $("#roomCode"),
+  copyLinkBtn: $("#copyLinkBtn"),
+  joinCount: $("#joinCount"),
+  nextBtn: $("#nextBtn"),
+  endBtn: $("#endBtn"),
+  board: $("#board"),
+  boardBody: $("#boardBody"),
+  qTitle: $("#qTitle"),
+  qChoices: $("#qChoices")
+};
+
+let roomRef=null, code=null, round=0, currentSet=null, stopPlayers=null, stopAnswers=null, stopRoomSnap=null;
+
+ui.createBtn.onclick = async () => {
+  currentSet = getSetById(setSel.value);
+  if(!currentSet){ alert("Pick a set first."); return; }
+
+  code    = genCode(6);
+  roomRef = doc(db, "rooms", code);
+
+  await setDoc(roomRef, {
+    mode: ui.modeSel.value,
+    setId: currentSet.id,
+    hostName: ui.hostName.value || "Host",
+    status: "lobby",
+    round: 0,
+    createdAt: serverTimestamp()
+  });
+
+  ui.roomCode.textContent = code;
+  ui.roomCard.style.display = "";
+  ui.board.style.display = "";
+  $("#creator").style.display = "none";
+
+  const playersCol = collection(roomRef, "players");
+  const playersQ = query(playersCol, orderBy("score", "desc"));
+  stopPlayers = onSnapshot(playersQ, snap=>{
+    const rows = [];
+    snap.forEach(d=>rows.push({id:d.id, ...d.data()}));
+    ui.joinCount.textContent = `${rows.length} player(s) connected`;
+    ui.boardBody.innerHTML = rows
+      .map((r,i)=>`<tr><td>${i+1}</td><td>${(r.name||"Player").replace(/</g,"&lt;")}</td><td>${r.score||0}</td></tr>`)
+      .join("");
+  });
+
+  stopRoomSnap = onSnapshot(roomRef, roomSnap=>{
+    const data = roomSnap.data(); if(!data) return;
+    round = data.round|0;
+  });
+};
+
+ui.copyLinkBtn.onclick = async () => {
+  const url = `${location.origin}${location.pathname.replace("host.html","")}player.html?code=${code||''}`;
+  await navigator.clipboard.writeText(url);
+  alert("Copied join link:\n" + url);
+};
+
+ui.nextBtn.onclick = async () => {
+  if(!roomRef) return;
+  const idx = (round) % currentSet.questions.length;
+  const q = currentSet.questions[idx];
+  round++;
+
+  await updateDoc(roomRef, {
+    round,
+    status: "question",
+    question: { n: round, q: q.q, choices: q.choices, answerIndex: q.correct }
+  });
+
+  ui.qTitle.textContent = `Q${round}: ${q.q}`;
+  ui.qChoices.innerHTML = q.choices.map((c,i)=>{
+    const mark = (i===q.correct) ? " ✓" : "";
+    return `<li>${c}${mark}</li>`;
+  }).join("");
+
+  if(stopAnswers) stopAnswers();
+  const answersQ = query(collection(roomRef, "answers"), where("round", "==", round));
+  stopAnswers = onSnapshot(answersQ, (snap)=>{
+    snap.docChanges().forEach(ch=>{
+      if(ch.type!=="added") return;
+      const ansRef = ch.doc.ref;
+
+      runTransaction(db, async (tx)=>{
+        const ansSnap = await tx.get(ansRef);
+        const ans = ansSnap.data(); if(!ans || ans.processed===true) return;
+
+        const roomSnap = await tx.get(roomRef);
+        const data = roomSnap.data(); if(!data || !data.question || data.question.n!==ans.round) return;
+
+        const correct = ans.choiceIndex === data.question.answerIndex;
+        const playerRef = doc(roomRef, "players", ans.playerId);
+        const playerSnap = await tx.get(playerRef);
+        if(!playerSnap.exists()) return;
+
+        const cur = playerSnap.data().score||0;
+        tx.update(playerRef, { score: cur + (correct?1:0) });
+        tx.update(ansRef, { processed: true, correct });
+      });
+    });
+  });
+};
+
+ui.endBtn.onclick = async ()=>{
+  if(!roomRef) return;
+  await updateDoc(roomRef, { status:"ended" });
+  if(stopAnswers) stopAnswers();
+  alert("Game ended.");
+};
+</script>
+</body>
+</html>
