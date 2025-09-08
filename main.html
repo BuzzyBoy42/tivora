@@ -1,10 +1,9 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Top-Down Map Editor — 5 Layers (Walls Collide, Smooth Camera)</title>
+<title>Top-Down Map Editor — Multi-Tile (Grass/Dirt/Path/Sand/Water + Walls)</title>
 <style>
   :root {
     --bg:#0f1020; --ink:#e8e9ff; --muted:#a3a9bd; --panel:rgba(22,24,42,.55); --accent:#7c93ff;
@@ -14,13 +13,14 @@
   canvas{display:block;width:100vw;height:100vh;background:#0d0f1d;image-rendering:pixelated;cursor:crosshair}
 
   .ui{
-    position:fixed;inset:12px auto auto 12px;width:330px;max-height:calc(100dvh - 24px);
+    position:fixed;inset:12px auto auto 12px;width:360px;max-height:calc(100dvh - 24px);
     display:grid;gap:10px;padding:12px;border-radius:14px;background:var(--panel);backdrop-filter:blur(10px);
     border:1px solid rgba(124,147,255,.25);box-shadow:0 20px 50px rgba(0,0,0,.35);overflow:auto
   }
   h1{margin:0 0 6px;font-size:15px;color:var(--accent);letter-spacing:.3px}
   .sub{color:var(--muted);margin-top:-4px}
-  .row{display:grid;gap:8px}.cols{grid-template-columns:repeat(3,1fr)}
+  .row{display:grid;gap:8px}
+  .cols{grid-template-columns:repeat(3,1fr)}
   .btn,.chip, .seg button{border:1px solid rgba(255,255,255,.12);background:#11152a;color:var(--ink);padding:8px 10px;border-radius:10px;cursor:pointer}
   .btn:hover,.chip:hover,.seg button:hover{background:#141936}
   .seg{display:flex;gap:6px;flex-wrap:wrap}
@@ -48,18 +48,19 @@
 
   <div class="row">
     <div class="legend">
-      <button class="chip active" data-tool="paint" id="tool-paint"><span class="swatch" style="background:linear-gradient(45deg,#232746 50%,#3b4274 0)"></span> Paint</button>
-      <button class="chip" data-tool="erase" id="tool-erase"><span class="swatch" style="background:transparent"></span> Erase</button>
-    </div>
-    <div class="legend">
-      <button class="chip active" data-tile="floor" id="tile-floor"><span class="swatch" style="background:linear-gradient(45deg,#1a1c33 50%,#17182c 0)"></span> Floor</button>
-      <button class="chip" data-tile="wall" id="tile-wall"><span class="swatch" style="background:#3b4274"></span> Wall (collides)</button>
+      <button class="chip active" id="tool-paint"><span class="swatch" style="background:linear-gradient(45deg,#232746 50%,#3b4274 0)"></span> Paint</button>
+      <button class="chip" id="tool-erase"><span class="swatch" style="background:transparent"></span> Erase</button>
     </div>
   </div>
 
   <div class="row">
+    <div class="legend" id="tilePalette"></div>
+    <div class="hint">Walls are solid (collide) on any layer. Other tiles are walkable.</div>
+  </div>
+
+  <div class="row">
     <div class="layers" id="layerBtns"></div>
-    <div class="hint">Layer 1 = bottom, Layer 5 = top. Visibility toggles only affect the editor view.</div>
+    <div class="hint">Layer 1 = bottom, Layer 5 = top. Visibility toggles affect editor view only.</div>
   </div>
 
   <div class="row cols">
@@ -81,7 +82,7 @@
   <div class="row">
     <div class="seg">
       <button class="btn" id="playBtn">▶ Playtest</button>
-      <span class="hint">WASD/Arrows • Shift to sprint. Camera follows smoothly.</span>
+      <span class="hint">WASD/Arrows • Shift to sprint. Smooth follow camera.</span>
     </div>
   </div>
 </div>
@@ -97,11 +98,30 @@
   const VIEW = { zoom: 1.8, min: 0.9, max: 3.5, step: 0.1, def: 1.8 };
   const PLAYER = { radius: 14, baseSpeed: 170, sprintMult: 1.45, color: "#ffd86b" };
 
+  // Tile type codes (keep WALL=2 to preserve collision logic)
+  const TILES = {
+    EMPTY: 0,
+    GRASS: 1,
+    WALL:  2, // collides
+    DIRT:  3,
+    PATH:  4,
+    SAND:  5,
+    WATER: 6
+  };
+
+  // Palette ordering for UI
+  const TILE_PALETTE = [
+    { key: "GRASS", label: "Grass",  color: "#2f7d3b" },
+    { key: "DIRT",  label: "Dirt",   color: "#6b4a2b" },
+    { key: "PATH",  label: "Path",   color: "#b99a66" },
+    { key: "SAND",  label: "Sand",   color: "#d8c27a" },
+    { key: "WATER", label: "Water",  color: "#2d6bba" },
+    { key: "WALL",  label: "Wall (solid)", color: "#3b4274" }
+  ];
+
   const COLORS = {
-    floorA:"#1a1c33", floorB:"#17182c",
-    wallTop:"#4a579a", wallFace:"#2a2f55", wallOutline:"#a9b1ff",
-    wallEdge:"rgba(0,0,0,0.40)", wallHatch:"rgba(255,255,255,0.07)",
-    grid:"rgba(255,255,255,0.06)", hover:"rgba(124,147,255,0.28)"
+    grid:"rgba(255,255,255,0.06)", hover:"rgba(124,147,255,0.28)",
+    wallTop:"#4a579a", wallFace:"#2a2f55", wallOutline:"#a9b1ff", wallEdge:"rgba(0,0,0,0.40)",
   };
 
   // ===== STATE =====
@@ -111,20 +131,97 @@
   function resize(){DPR=Math.max(1,Math.min(2,window.devicePixelRatio||1));cvs.width=Math.floor(innerWidth*DPR);cvs.height=Math.floor(innerHeight*DPR);ctx.setTransform(DPR,0,0,DPR,0,0)}
   addEventListener("resize", resize, {passive:true}); resize();
 
-  const map = { layers: Array.from({length:LAYERS},()=>make2D(MAP_W,MAP_H,0)), meta:{w:MAP_W,h:MAP_H,tile:TILE,version:2} };
+  // Map: layers[l][y][x] -> tile code
+  const map = { layers: Array.from({length:LAYERS},()=>make2D(MAP_W,MAP_H,TILES.EMPTY)), meta:{w:MAP_W,h:MAP_H,tile:TILE,tiles:TILES,version:3} };
   const world = { w: MAP_W * TILE, h: MAP_H * TILE };
 
   const camera = { x:0, y:0, vx:0, vy:0 };
-  const CAM = { smoothTime:0.14, maxSpeed:6000, lookAhead:38 }; // tuned to feel clearly following
+  const CAM = { smoothTime:0.14, maxSpeed:6000, lookAhead:38 };
 
   const player = { x:TILE*3, y:TILE*3, face:{x:1,y:0} };
-  let playtest=false, showGrid=true, currentLayer=1, tool="paint", tileType="floor";
+  let playtest=false, showGrid=true, currentLayer=1, tool="paint", tileKey="GRASS";
 
   const keys = new Set();
   const mouse = { down:false, button:0, panning:false, panStart:{x:0,y:0}, camStart:{x:0,y:0}, worldX:0, worldY:0, tx:-1, ty:-1 };
 
+  // ===== PATTERN CACHE FOR TILES =====
+  const patterns = {};
+  function makePattern(w, h, drawFn) {
+    const c = document.createElement("canvas");
+    c.width = w; c.height = h;
+    const k = c.getContext("2d");
+    drawFn(k, w, h);
+    return k.createPattern(c, "repeat");
+  }
+  function initPatterns() {
+    // GRASS: two greens + blades
+    patterns.GRASS = makePattern(16,16,(k,w,h)=>{
+      k.fillStyle = "#244e2c"; k.fillRect(0,0,w,h);
+      k.fillStyle = "#2e6a37"; for(let y=0;y<h;y+=8){for(let x=0;x<w;x+=8){k.fillRect(x,y,8,8);}}
+      k.strokeStyle = "rgba(255,255,255,0.06)"; k.lineWidth=1;
+      for(let i=0;i<6;i++){ const x=Math.random()*w; const y=Math.random()*h; k.beginPath(); k.moveTo(x,y); k.lineTo(x+1,y-2); k.stroke(); }
+    });
+
+    // DIRT: brown with pebbles
+    patterns.DIRT = makePattern(16,16,(k,w,h)=>{
+      k.fillStyle = "#5f3f27"; k.fillRect(0,0,w,h);
+      k.fillStyle = "#6b4a2b";
+      for(let i=0;i<18;i++){ k.globalAlpha = 0.15 + Math.random()*0.25; k.beginPath(); k.arc(Math.random()*w, Math.random()*h, Math.random()*1.5+0.5, 0, Math.PI*2); k.fill(); }
+      k.globalAlpha = 1;
+    });
+
+    // PATH: tan with diagonal strokes
+    patterns.PATH = makePattern(16,16,(k,w,h)=>{
+      k.fillStyle = "#b99a66"; k.fillRect(0,0,w,h);
+      k.strokeStyle = "rgba(0,0,0,0.08)"; k.lineWidth=1;
+      for(let i=-h;i<w+h;i+=5){ k.beginPath(); k.moveTo(i,0); k.lineTo(i-h,h); k.stroke(); }
+    });
+
+    // SAND: yellow with speckles
+    patterns.SAND = makePattern(16,16,(k,w,h)=>{
+      k.fillStyle = "#d8c27a"; k.fillRect(0,0,w,h);
+      k.fillStyle = "rgba(0,0,0,0.10)";
+      for(let i=0;i<20;i++){ k.fillRect(Math.random()*w, Math.random()*h, 1, 1); }
+      k.fillStyle = "rgba(255,255,255,0.12)";
+      for(let i=0;i<12;i++){ k.fillRect(Math.random()*w, Math.random()*h, 1, 1); }
+    });
+
+    // WATER: deep blue with gentle ripples
+    patterns.WATER = makePattern(32,32,(k,w,h)=>{
+      const grad = k.createLinearGradient(0,0,0,h);
+      grad.addColorStop(0,"#1f4b85"); grad.addColorStop(1,"#15365f");
+      k.fillStyle = grad; k.fillRect(0,0,w,h);
+      k.strokeStyle = "rgba(255,255,255,0.15)"; k.lineWidth=1;
+      for(let y=4; y<h; y+=8){ k.beginPath(); for(let x=0; x<=w; x+=4){ k.lineTo(x, y + Math.sin((x+y)*0.25)*1.2); } k.stroke(); }
+    });
+  }
+  initPatterns();
+
   // ===== UI WIRING =====
   const q = (id)=>document.getElementById(id);
+
+  // Tools
+  const toolPaint=q("tool-paint"), toolErase=q("tool-erase");
+  function setTool(t){ tool=t; toolPaint.classList.toggle("active",tool==="paint"); toolErase.classList.toggle("active",tool==="erase"); }
+  toolPaint.onclick=()=>setTool("paint"); toolErase.onclick=()=>setTool("erase"); setTool("paint");
+
+  // Tile palette
+  const tilePalette = q("tilePalette");
+  function renderPalette() {
+    tilePalette.innerHTML = "";
+    TILE_PALETTE.forEach(item => {
+      const btn = document.createElement("button");
+      btn.className = "chip";
+      btn.dataset.tile = item.key;
+      btn.innerHTML = `<span class="swatch" style="background:${item.color}"></span>${item.label}`;
+      if (item.key === tileKey) btn.classList.add("active");
+      btn.onclick = () => { tileKey = item.key; [...tilePalette.children].forEach(c=>c.classList.remove("active")); btn.classList.add("active"); };
+      tilePalette.appendChild(btn);
+    });
+  }
+  renderPalette();
+
+  // Layers list
   const layerBtns = q("layerBtns"), layerUI=[];
   for (let i=1;i<=LAYERS;i++){
     const row=document.createElement("div");row.className="layer";
@@ -134,23 +231,17 @@
     eye.onchange=()=>{layerUI[i-1].visible=eye.checked};
     row.append(eye,name,pick); layerBtns.appendChild(row); layerUI.push({visible:true,eye,pick});
   }
-  function setLayer(n){currentLayer=n;layerUI.forEach((L,idx)=>L.pick.classList.toggle("active",idx===n-1))}
+  function setLayer(n){ currentLayer=n; layerUI.forEach((L,idx)=>L.pick.classList.toggle("active",idx===n-1)); }
   setLayer(1);
 
-  const toolPaint=q("tool-paint"), toolErase=q("tool-erase"), tileFloor=q("tile-floor"), tileWall=q("tile-wall");
-  function setTool(t){tool=t;toolPaint.classList.toggle("active",tool==="paint");toolErase.classList.toggle("active",tool==="erase")}
-  function setTile(t){tileType=t;tileFloor.classList.toggle("active",tileType==="floor");tileWall.classList.toggle("active",tileType==="wall")}
-  setTool("paint"); setTile("floor");
-  toolPaint.onclick=()=>setTool("paint"); toolErase.onclick=()=>setTool("erase");
-  tileFloor.onclick=()=>setTile("floor"); tileWall.onclick=()=>setTile("wall");
-
-  q("clearLayerBtn").onclick=()=>{map.layers[currentLayer-1]=make2D(MAP_W,MAP_H,0);saveAutosave()};
-  q("clearAllBtn").onclick=()=>{for(let i=0;i<LAYERS;i++)map.layers[i]=make2D(MAP_W,MAP_H,0);saveAutosave()};
+  // Buttons
+  q("clearLayerBtn").onclick=()=>{map.layers[currentLayer-1]=make2D(MAP_W,MAP_H,TILES.EMPTY);saveAutosave()};
+  q("clearAllBtn").onclick=()=>{for(let i=0;i<LAYERS;i++)map.layers[i]=make2D(MAP_W,MAP_H,TILES.EMPTY);saveAutosave()};
   q("toggleGridBtn").onclick=()=>{showGrid=!showGrid};
   q("exportBtn").onclick=()=>download("map.json", JSON.stringify(map));
   q("copyBtn").onclick=async()=>{try{await navigator.clipboard.writeText(JSON.stringify(map));alert("Copied JSON")}catch{alert("Clipboard blocked; use Export JSON")}};
   q("importBtn").onclick=()=>q("fileInput").click();
-  q("fileInput").addEventListener("change",async(e)=>{const f=e.target.files[0];if(!f)return;try{const t=await f.text();const o=JSON.parse(t);if(!o.layers||!o.meta)throw new Error("Invalid");if(o.meta.w!==MAP_W||o.meta.h!==MAP_H||o.meta.tile!==TILE)throw new Error("Size mismatch");for(let l=0;l<LAYERS;l++)map.layers[l]=o.layers[l].map(r=>r.map(v=>clampi(v,0,2)));saveAutosave(true)}catch(err){alert("Import failed: "+err.message)}finally{e.target.value=""}});
+  q("fileInput").addEventListener("change",async(e)=>{const f=e.target.files[0];if(!f)return;try{const t=await f.text();const o=JSON.parse(t);if(!o.layers||!o.meta)throw new Error("Invalid");if(o.meta.w!==MAP_W||o.meta.h!==MAP_H||o.meta.tile!==TILE)throw new Error("Size mismatch");const valid=setOf(Object.values(TILES));for(let l=0;l<LAYERS;l++)map.layers[l]=o.layers[l].map(r=>r.map(v=>valid.has(v)?v:TILES.EMPTY));saveAutosave(true)}catch(err){alert("Import failed: "+err.message)}finally{e.target.value=""}});
   q("playBtn").onclick=()=>togglePlay();
 
   // ===== INPUT =====
@@ -160,9 +251,6 @@
     if(["w","a","s","d","arrowup","arrowdown","arrowleft","arrowright"," "].includes(k)) e.preventDefault();
     if(["-","=","0"].includes(e.key)) e.preventDefault();
     if(k>="1"&&k<="5") setLayer(Number(k));
-    if(k==="f") setTile("floor");
-    if(k==="w") setTile("wall");
-    if(k==="e") setTool("erase");
     if(k==="g") showGrid=!showGrid;
     if(k==="p") togglePlay();
 
@@ -206,24 +294,24 @@
   // ===== MAP HELPERS =====
   function make2D(w,h,val){return Array.from({length:h},()=>Array.from({length:w},()=>val))}
   function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
-  function clampi(v,a,b){v=v|0; return v<a?a:(v>b?b:v)}
   function inBounds(tx,ty){return tx>=0&&ty>=0&&tx<MAP_W&&ty<MAP_H}
   function setTileAt(l,tx,ty,code){ if(inBounds(tx,ty)) map.layers[l][ty][tx]=code }
-  function getTileAt(l,tx,ty){ return inBounds(tx,ty)?map.layers[l][ty][tx]:0 }
-  function anyWallAtTile(tx,ty){ if(!inBounds(tx,ty)) return false; for(let l=0;l<LAYERS;l++){ if(map.layers[l][ty][tx]===2) return true } return false }
+  function getTileAt(l,tx,ty){ return inBounds(tx,ty)?map.layers[l][ty][tx]:TILES.EMPTY }
+  function anyWallAtTile(tx,ty){ if(!inBounds(tx,ty)) return false; for(let l=0;l<LAYERS;l++){ if(map.layers[l][ty][tx]===TILES.WALL) return true } return false }
+  function setOf(arr){ const s=new Set(); arr.forEach(v=>s.add(v)); return s; }
 
   function handlePaint(tx,ty,button){
     if(!inBounds(tx,ty)) return;
     if(mouse.tx===tx && mouse.ty===ty) return;
     mouse.tx=tx; mouse.ty=ty;
 
-    if(button===2 || tool==="erase"){ setTileAt(currentLayer-1,tx,ty,0); saveAutosaveDebounced(); return; }
-    const code = (tileType==="floor") ? 1 : 2;
+    if(button===2 || tool==="erase"){ setTileAt(currentLayer-1,tx,ty,TILES.EMPTY); saveAutosaveDebounced(); return; }
+    const code = TILES[tileKey];
     setTileAt(currentLayer-1,tx,ty,code);
     saveAutosaveDebounced();
   }
 
-  // ===== CAMERA (true follow with look-ahead) =====
+  // ===== CAMERA (true follow) =====
   function smoothDamp(current,target,velocity,smoothTime,maxSpeed,dt){
     smoothTime=Math.max(0.0001,smoothTime);
     const omega=2/smoothTime, x=omega*dt, exp=1/(1+x+0.48*x*x+0.235*x*x*x);
@@ -240,14 +328,10 @@
   }
 
   function updateCamera(dt){
-    // Desired center = player + look-ahead
     const centerX = player.x + player.face.x * CAM.lookAhead;
     const centerY = player.y + player.face.y * CAM.lookAhead;
-
-    // Convert to top-left target
     const targetX = clamp(centerX - viewW()/2, 0, Math.max(0, world.w - viewW()));
     const targetY = clamp(centerY - viewH()/2, 0, Math.max(0, world.h - viewH()));
-
     const sx = smoothDamp(camera.x, targetX, camera.vx, CAM.smoothTime, CAM.maxSpeed, dt);
     camera.x = sx.value; camera.vx = sx.velocity;
     const sy = smoothDamp(camera.y, targetY, camera.vy, CAM.smoothTime, CAM.maxSpeed, dt);
@@ -258,7 +342,7 @@
   function moveAndCollide(dx,dy){
     const r = PLAYER.radius;
 
-    // X axis sweep
+    // X
     if(dx!==0){
       let nx=player.x+dx;
       if(dx>0){
@@ -279,7 +363,7 @@
       player.x=nx;
     }
 
-    // Y axis sweep
+    // Y
     if(dy!==0){
       let ny=player.y+dy;
       if(dy>0){
@@ -316,12 +400,42 @@
     return { x, y, tx:Math.floor(x/TILE), ty:Math.floor(y/TILE) };
   }
 
+  function drawTile(code, x, y, tx, ty){
+    switch(code){
+      case TILES.GRASS:
+        ctx.fillStyle = patterns.GRASS; ctx.fillRect(x,y,TILE,TILE);
+        break;
+      case TILES.DIRT:
+        ctx.fillStyle = patterns.DIRT; ctx.fillRect(x,y,TILE,TILE);
+        break;
+      case TILES.PATH:
+        ctx.fillStyle = patterns.PATH; ctx.fillRect(x,y,TILE,TILE);
+        break;
+      case TILES.SAND:
+        ctx.fillStyle = patterns.SAND; ctx.fillRect(x,y,TILE,TILE);
+        break;
+      case TILES.WATER:
+        ctx.fillStyle = patterns.WATER; ctx.fillRect(x,y,TILE,TILE);
+        break;
+      case TILES.WALL:
+        // Base block (same style as earlier, with strong outline)
+        ctx.fillStyle = COLORS.wallTop;  ctx.fillRect(x,y,TILE,8);
+        ctx.fillStyle = COLORS.wallFace; ctx.fillRect(x,y+8,TILE,TILE-8);
+        ctx.strokeStyle = COLORS.wallOutline; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(x+0.5,y+0.5); ctx.lineTo(x+TILE-0.5,y+0.5); ctx.stroke();
+        ctx.fillStyle = COLORS.wallEdge;
+        ctx.fillRect(x + TILE - 4, y + 8, 4, TILE - 8);
+        ctx.fillRect(x, y + TILE - 4, TILE, 4);
+        break;
+    }
+  }
+
   function drawWorld(){
     const vW=viewW(), vH=viewH();
     const startTX=Math.floor(camera.x/TILE), startTY=Math.floor(camera.y/TILE);
     const endTX=Math.ceil((camera.x+vW)/TILE), endTY=Math.ceil((camera.y+vH)/TILE);
 
-    // draw layers bottom->top
+    // layers bottom->top
     for(let l=0;l<LAYERS;l++){
       if(!layerUI[l].visible) continue;
       const alpha = (l+1===currentLayer)?1:0.78;
@@ -330,34 +444,9 @@
       for(let ty=startTY; ty<endTY; ty++){
         for(let tx=startTX; tx<endTX; tx++){
           const code = getTileAt(l,tx,ty);
-          if(code===0) continue;
+          if(code===TILES.EMPTY) continue;
           const x=tx*TILE - camera.x, y=ty*TILE - camera.y;
-
-          if(code===1){
-            // FLOOR: checker
-            ctx.fillStyle = ((tx+ty)&1) ? COLORS.floorA : COLORS.floorB;
-            ctx.fillRect(x,y,TILE,TILE);
-          } else if(code===2){
-            // WALL: bold top lip + face + outline + hatch overlay
-            // base
-            ctx.fillStyle = COLORS.wallTop; ctx.fillRect(x,y,TILE,8);
-            ctx.fillStyle = COLORS.wallFace; ctx.fillRect(x,y+8,TILE,TILE-8);
-
-            // strong outline on top edge so it's clearly a wall block
-            ctx.strokeStyle = COLORS.wallOutline; ctx.lineWidth = 2;
-            ctx.beginPath(); ctx.moveTo(x+0.5,y+0.5); ctx.lineTo(x+TILE-0.5,y+0.5); ctx.stroke();
-
-            // bevel edges / drop
-            ctx.fillStyle = COLORS.wallEdge;
-            ctx.fillRect(x + TILE - 4, y + 8, 4, TILE - 8);
-            ctx.fillRect(x, y + TILE - 4, TILE, 4);
-
-            // subtle hatch to scream "WALL"
-            ctx.save();
-            ctx.globalAlpha = 1;
-            drawHatch(x,y+8,TILE,TILE-8);
-            ctx.restore();
-          }
+          drawTile(code,x,y,tx,ty);
         }
       }
       ctx.globalAlpha=1;
@@ -376,37 +465,23 @@
       }
     }
 
-    // hover highlight in edit mode
+    // hover (edit mode only)
     if(!playtest){
       const tx = Math.floor(mouse.worldX / TILE), ty = Math.floor(mouse.worldY / TILE);
       if(inBounds(tx,ty)){
         const hx=tx*TILE - camera.x, hy=ty*TILE - camera.y;
-        ctx.fillStyle = COLORS.hover; ctx.fillRect(hx,hy,TILE,TILE);
+        ctx.fillStyle = "rgba(124,147,255,0.22)"; ctx.fillRect(hx,hy,TILE,TILE);
       }
-    }
-  }
-
-  function drawHatch(x,y,w,h){
-    const step=6;
-    ctx.strokeStyle = COLORS.wallHatch; ctx.lineWidth=1;
-    for(let i=-h; i<w+h; i+=step){
-      ctx.beginPath();
-      ctx.moveTo(x+i, y);
-      ctx.lineTo(x+i-h, y+h);
-      ctx.stroke();
     }
   }
 
   function drawPlayer(){
     const px=player.x - camera.x, py=player.y - camera.y, r=PLAYER.radius;
-    // body
     ctx.fillStyle=PLAYER.color; ctx.beginPath(); ctx.arc(px,py,r,0,Math.PI*2); ctx.fill();
-    // direction pointer
     const ang=Math.atan2(player.face.y,player.face.x);
     ctx.save(); ctx.translate(px,py); ctx.rotate(ang);
     ctx.fillStyle="#1d213f"; ctx.beginPath(); ctx.moveTo(r*0.9,0); ctx.lineTo(r*0.2,6); ctx.lineTo(r*0.2,-6); ctx.closePath(); ctx.fill();
     ctx.restore();
-    // shadow
     ctx.fillStyle="rgba(0,0,0,0.25)"; ctx.beginPath(); ctx.ellipse(px,py+r*.55,r*.9,r*.45,0,0,Math.PI*2); ctx.fill();
   }
 
@@ -428,15 +503,12 @@
     ctx.save(); ctx.scale(VIEW.zoom,VIEW.zoom);
 
     if(playtest){
-      // input
       const ax = (keys.has("d")||keys.has("arrowright")?1:0) - (keys.has("a")||keys.has("arrowleft")?1:0);
       const ay = (keys.has("s")||keys.has("arrowdown")?1:0) - (keys.has("w")||keys.has("arrowup")?1:0);
       let len=Math.hypot(ax,ay); let dx=0,dy=0;
       if(len){ dx=ax/len; dy=ay/len; player.face={x:dx,y:dy}; }
       const speed=PLAYER.baseSpeed*(keys.has("shift")?PLAYER.sprintMult:1);
       moveAndCollide(dx*speed*dt, dy*speed*dt);
-
-      // camera FOLLOW (always updates in play mode)
       updateCamera(dt);
     }
 
@@ -449,16 +521,15 @@
   requestAnimationFrame(tick);
 
   // ===== AUTOSAVE =====
-  const AUTOKEY="topdown_map_autosave_v2";
+  const AUTOKEY="topdown_map_autosave_v3";
   function saveAutosave(force=false){ try{localStorage.setItem(AUTOKEY,JSON.stringify(map)); if(force) console.log("Autosave loaded")}catch{} }
   let saveTimer=null; function saveAutosaveDebounced(){ clearTimeout(saveTimer); saveTimer=setTimeout(saveAutosave,400) }
-  try{ const raw=localStorage.getItem(AUTOKEY); if(raw){const obj=JSON.parse(raw); if(obj?.layers?.length===LAYERS){for(let l=0;l<LAYERS;l++) map.layers[l]=obj.layers[l].map(r=>r.map(v=>clampi(v,0,2)))}} }catch{}
+  try{ const raw=localStorage.getItem(AUTOKEY); if(raw){const obj=JSON.parse(raw); if(obj?.layers?.length===LAYERS){const valid=setOf(Object.values(TILES)); for(let l=0;l<LAYERS;l++) map.layers[l]=obj.layers[l].map(r=>r.map(v=>valid.has(v)?v:TILES.EMPTY))}} }catch{}
 
   // ===== MISC =====
   function togglePlay(){
     playtest=!playtest;
     if(playtest){
-      // snap camera toward player on enter so follow is obvious
       camera.x = clamp(player.x - viewW()/2, 0, Math.max(0,world.w - viewW()));
       camera.y = clamp(player.y - viewH()/2, 0, Math.max(0,world.h - viewH()));
       camera.vx=camera.vy=0;
