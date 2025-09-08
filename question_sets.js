@@ -1,4 +1,3 @@
-/* Edit/expand these sets freely. Keep structure: { id, name, questions[] } */
 window.TIVORA_SETS = [
   {
     id: "demo-math",
